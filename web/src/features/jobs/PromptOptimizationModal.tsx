@@ -5,6 +5,7 @@ import { jobPromptRequest, type PromptOptimizationResult } from '@video-studio/s
 import type { Job, Model, Provider } from '../../shared/api/api'
 import { api, json } from '../../shared/api/api'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import './prompt-optimization.css'
 
 type Props = {
@@ -23,11 +24,12 @@ export default function PromptOptimizationModal(props: Props) {
   const [adjustment, setAdjustment] = useState(''), [resultAdjustment, setResultAdjustment] = useState('')
   const [pending, setPending] = useState(false), [applying, setApplying] = useState(false), [error, setError] = useState('')
   const { modelId, selectModel } = useSharedModelSelection('text', available, { locked: pending || applying })
+  const reasoning = useTaskReasoning(available.find(model => model.id === modelId))
   const [elapsed, setElapsed] = useState(0), [resultKey, setResultKey] = useState('')
   const [resultSourceKey, setResultSourceKey] = useState('')
   const serial = useRef(0), abort = useRef<AbortController | null>(null), locked = useRef(false)
   const sourceKey = JSON.stringify([props.job.project_id, props.job.id, props.job.request, props.job.error, source, props.sourceKey])
-  const currentKey = JSON.stringify([sourceKey, modelId])
+  const currentKey = JSON.stringify([sourceKey, modelId, reasoning.value])
   const maxLength = props.maxLength || 80_000
   useEffect(() => () => { serial.current++; abort.current?.abort() }, [])
   useEffect(() => {
@@ -49,7 +51,7 @@ export default function PromptOptimizationModal(props: Props) {
     abort.current = new AbortController(); setPending(true); setElapsed(0); setError('')
     try {
       const response = await api<PromptOptimizationResult>(`/projects/${props.job.project_id}/jobs/${props.job.id}/optimize-prompt`, {
-        ...json('POST', { model_id: modelId, prompt: optimizationPrompt, adjustment_request: capturedAdjustment }), signal: abort.current.signal,
+        ...json('POST', { model_id: modelId, ...reasoning.request, prompt: optimizationPrompt, adjustment_request: capturedAdjustment }), signal: abort.current.signal,
       })
       if (turn === serial.current) {
         setResult(response.prompt); setChanges(response.changes); setResultKey(captured)
@@ -76,6 +78,7 @@ export default function PromptOptimizationModal(props: Props) {
         data={available.map(model => ({ value: model.id, label: model.name }))} value={modelId || null}
         onChange={value => selectModel(value || '')} searchable allowDeselect={false} disabled={pending || applying}
         comboboxProps={{ zIndex: 320 }} />
+      <TaskReasoningSelect reasoning={reasoning} disabled={pending || applying} zIndex={320} />
       {!available.length && <Alert color="orange">请先在模型设置中启用一个文本模型及其提供商。</Alert>}
       <section className="prompt-optimization-adjustment" aria-label="提示词调整方向">
         <Textarea label="本次调整要求" aria-label="本次调整要求" value={adjustment}

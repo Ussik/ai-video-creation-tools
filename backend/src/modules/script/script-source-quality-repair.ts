@@ -260,10 +260,11 @@ function indexedStory(story: NonNullable<ScriptSourceAnalysis['story']>) {
 function repairedItem(change: Change, units: Map<number, SourceUnit>, section: ScriptSourceSection | undefined, source: Source, index: number): unknown {
   if (change.target !== 'section.characters' && change.target !== 'section.events' || change.value === null) return change.value
   const item = change.value, unit = units.get(item.evidence.unit_id)
-  const occurrence = item.evidence.occurrence_unit_id === undefined ? unit : units.get(item.evidence.occurrence_unit_id)
+  const isCharacter = change.target === 'section.characters'
+  const occurrenceUnitId = isCharacter && 'occurrence_unit_id' in item.evidence ? item.evidence.occurrence_unit_id : undefined
+  const occurrence = occurrenceUnitId === undefined ? unit : units.get(occurrenceUnitId)
   const local = (value: SourceUnit | undefined) => !!section && !!value?.text.trim() && value.offset >= section.offset && value.offset + value.text.length <= section.offset + section.length
-  if (!unit?.text.trim() || !(change.target === 'section.characters' ? local(occurrence) : local(unit)) ||
-    change.target === 'section.events' && item.evidence.occurrence_unit_id !== undefined) {
+  if (!unit?.text.trim() || !(isCharacter ? local(occurrence) : local(unit))) {
     throw changeIssue(index, change.target, 'value', '事件发生与人物出场必须引用本章节内真实非空原文；人物跨章身份引用须另给本章出场证据')
   }
   if ('name' in item && !source.content.slice(section!.offset, section!.offset + section!.length).normalize('NFKC').includes(item.name.normalize('NFKC').trim())) {
@@ -274,7 +275,7 @@ function repairedItem(change: Change, units: Map<number, SourceUnit>, section: S
     throw changeIssue(index, change.target, 'value', '辅助证据必须真实非空且不重复')
   }
   return { ...item, evidence: { offset: unit.offset, quote: unit.text,
-    ...(item.evidence.occurrence_unit_id !== undefined ? { occurrence: { offset: occurrence!.offset, quote: occurrence!.text } } : {}),
+    ...(occurrenceUnitId !== undefined ? { occurrence: { offset: occurrence!.offset, quote: occurrence!.text } } : {}),
     ...(ids.length ? { supporting: ids.map(id => ({ offset: units.get(id)!.offset, quote: units.get(id)!.text })) } : {}),
   } }
 }

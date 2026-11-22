@@ -36,6 +36,8 @@ function readRequest(raw: string): Record<string, unknown> | null {
 
 type Props = {
   job: Job
+  embedded?: boolean
+  loadDetails?: boolean
   children?: ReactNode
   model?: Model
   provider?: Provider
@@ -45,18 +47,18 @@ type Props = {
   onOpenCanvas?: () => void
 }
 
-export default function JobInformationPopover({ job, model, provider, shot, projectName, assets, onOpenCanvas, children }: Props) {
+export default function JobInformationPopover({ job, embedded = false, loadDetails = true, model, provider, shot, projectName, assets, onOpenCanvas, children }: Props) {
   const [opened, setOpened] = useState(false)
   const [providerInputs, setProviderInputs] = useState<JobProviderInputs | null>(null)
   const [inputError, setInputError] = useState('')
   useEffect(() => {
-    if (!opened || job.job_type === 'export') return
+    if (!(opened || embedded && loadDetails) || job.job_type === 'export') return
     let current = true
     setProviderInputs(null); setInputError('')
     void api<JobProviderInputs>(`/jobs/${job.id}/provider-inputs`).then(value => { if (current) setProviderInputs(value) })
       .catch(error => { if (current) setInputError(error instanceof Error ? error.message : '参考图定位加载失败') })
     return () => { current = false }
-  }, [opened, job.id, job.status])
+  }, [opened, embedded, loadDetails, job.id, job.status])
   const request = readRequest(job.request)
   const modality = generationRecoveryModality(job, model?.modality)
   const image = modality === 'image'
@@ -89,23 +91,7 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
   const clips = Array.isArray(request?.clips) ? request.clips : []
   const submittedAt = new Date(job.created_at)
 
-  return <Popover opened={opened} onChange={setOpened} position="bottom-end" offset={8}
-    width="min(520px, calc(100vw - 24px))" withinPortal zIndex={220} trapFocus returnFocus
-    preventPositionChangeWhenVisible={false}
-    middlewares={{
-      flip: { padding: 12 }, shift: { padding: 12 },
-      size: { padding: 12, apply: ({ availableHeight, elements }) => {
-        elements.floating.style.maxHeight = `${Math.max(0, Math.min(640, availableHeight))}px`
-      } },
-    }}
-    classNames={{ dropdown: 'job-info-popover' }}>
-    <Popover.Target>
-      <ActionIcon variant="subtle" className="job-info-trigger" aria-label="查看任务信息"
-        title="查看任务信息" aria-expanded={opened} aria-haspopup="dialog" onClick={() => setOpened(!opened)}>
-        <Info size={18} />
-      </ActionIcon>
-    </Popover.Target>
-    <Popover.Dropdown role="dialog" aria-label="任务详情">
+  const content = <>
       <div className="job-info-heading"><strong>任务详情</strong><span className={`job-status status-${job.status}`}>{recovery?.action === 'verify' && !knownImageRefusal ? '待核对' : exported && job.status === 'running' ? '导出中' : statusLabels[job.status]}</span></div>
       <div className="job-info-content" tabIndex={0}>
         {recovery && !knownImageRefusal && <section className="job-info-text"><h2>{recovery.label}</h2><p>{recovery.guidance}</p></section>}
@@ -132,7 +118,7 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
           {onOpenCanvas && <Button variant="light" size="xs" onClick={onOpenCanvas}>返回画布检查或替换参考图</Button>}
         </section>}
         {providerInputs && !providerInputs.manifest && job.status === 'failed' && !!referenceIds.length && <section className="job-info-text"><h2>参考图定位</h2><p>此历史任务没有最终输入位置记录，无法精确定位被拒图片；下方素材顺序不代表上游 content 位置。</p></section>}
-        {opened && children}
+        {(opened || embedded) && children}
         <dl>
           <div><dt>任务类型</dt><dd>{exported ? '成片导出' : speech ? '配音生成' : image ? '图片生成' : modality === 'video' ? '视频生成' : '生成任务'}</dd></div>
           <div><dt>所属项目</dt><dd>{projectName}</dd></div>
@@ -162,6 +148,27 @@ export default function JobInformationPopover({ job, model, provider, shot, proj
         {!exported && request && !prompt?.trim() && <p className="job-info-empty">此任务未记录提示词。</p>}
         {!request && job.request.trim() && <section className="job-info-text"><h2>原始请求记录</h2><p>{job.request}</p></section>}
       </div>
+  </>
+  if (embedded) return <div className="job-info-inline">{content}</div>
+
+  return <Popover opened={opened} onChange={setOpened} position="bottom-end" offset={8}
+    width="min(520px, calc(100vw - 24px))" withinPortal zIndex={220} trapFocus returnFocus
+    preventPositionChangeWhenVisible={false}
+    middlewares={{
+      flip: { padding: 12 }, shift: { padding: 12 },
+      size: { padding: 12, apply: ({ availableHeight, elements }) => {
+        elements.floating.style.maxHeight = `${Math.max(0, Math.min(640, availableHeight))}px`
+      } },
+    }}
+    classNames={{ dropdown: 'job-info-popover' }}>
+    <Popover.Target>
+      <ActionIcon variant="subtle" className="job-info-trigger" aria-label="查看任务信息"
+        title="查看任务信息" aria-expanded={opened} aria-haspopup="dialog" onClick={() => setOpened(!opened)}>
+        <Info size={18} />
+      </ActionIcon>
+    </Popover.Target>
+    <Popover.Dropdown role="dialog" aria-label="任务详情">
+      {content}
     </Popover.Dropdown>
   </Popover>
 }

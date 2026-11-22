@@ -10,7 +10,7 @@ import { fixture } from './fixtures/final-cut'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver', 'HTMLMediaElement', 'FormData', 'File']) {
+for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLElement', 'Element', 'ShadowRoot', 'Event', 'MouseEvent', 'MutationObserver', 'HTMLMediaElement', 'HTMLAnchorElement', 'HTMLInputElement', 'FormData', 'File']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[key] })
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
@@ -139,6 +139,28 @@ test('switching a dirty cut offers cancel/save/discard and cancel preserves the 
     assert.equal(field('剪辑名称').value, '预告B'); assert.equal(view.source.cuts.find(cut => cut.id === 'cut-a')!.name, 'A的未保存修改')
     await fill('剪辑名称', 'B的未保存修改'); await choose('选择独立剪辑', 'cut-a'); await click('放弃修改并继续')
     assert.equal(field('剪辑名称').value, 'A的未保存修改'); assert.equal(view.source.cuts.find(cut => cut.id === 'cut-b')!.name, '预告B')
+  } finally { await view.destroy() }
+})
+
+test('removing a clip requires confirmation and only edits the current cut draft', async t => {
+  const view = await mount(t)
+  try {
+    await click('移除片段 1')
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent!, /移除当前片段？.*开场.*预告A/)
+    assert.equal(button('移除片段', dialog).closest('footer')?.className, 'basic-cut-dialog-actions')
+    await click('取消')
+    assert.ok(button('编辑片段 1：开场'))
+    assert.ok(button('保存剪辑').disabled)
+
+    await click('移除片段 1')
+    await click('移除片段')
+    assert.ok(button('编辑片段 1：片名'))
+    assert.deepEqual(view.source.cuts[0].clips.map(clip => clip.id), ['part1', 'part2'])
+    assert.equal(view.source.requests.filter(request => request.method !== 'GET').length, 0)
+    await click('保存剪辑')
+    assert.deepEqual(view.source.cuts[0].clips.map(clip => clip.id), ['part2'])
+    assert.deepEqual(view.source.cuts[1].clips.map(clip => clip.id), ['part2'])
   } finally { await view.destroy() }
 })
 

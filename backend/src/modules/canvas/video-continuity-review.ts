@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises'
 import sharp from 'sharp'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { bindTaskReasoningById, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { storyboardContinuityContext } from '@video-studio/shared/storyboard/storyboard-media-context'
 import type { VideoContinuityFinding, VideoContinuityReview } from '@video-studio/shared/media/video-continuity-review'
 import { all, one, required, type Asset, type Model, type Shot, type TimelineClip } from '../../infrastructure/database/db.js'
@@ -11,7 +12,7 @@ import { generateStructuredOutput, type OutputContract } from '../generation/mod
 import { reviewFrame, reviewMediaLocation, reviewVideoDuration } from '../assets/video-review-media.js'
 
 const id = z.string().trim().min(1).max(120)
-const inputSchema = z.object({ model_id: id, shot_id: id.nullable(), target_model_id: id,
+const inputSchema = z.object({ model_id: id, text_generation_options: textGenerationOptionsInput, shot_id: id.nullable(), target_model_id: id,
   prompt: z.string().trim().min(1).max(120000), generation_duration: z.number().min(1).max(120),
   mode: z.enum(['text', 'first_frame', 'first_last_frame', 'reference', 'edit', 'extend']).optional(),
   generate_audio: z.boolean().default(true),
@@ -95,6 +96,7 @@ export function validateVideoContinuityFindings(findings: VideoContinuityFinding
 export function registerVideoContinuityReviewRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/projects/:id/canvas/video-continuity-review', async (request, reply) => {
     const projectId = z.object({ id }).parse(request.params).id, input = inputSchema.parse(request.body)
+    const withReasoning = bindTaskReasoningById(input.model_id, input.text_generation_options)
     required('projects', projectId)
     const before = await snapshot(projectId, input)
     const controller = new AbortController()
@@ -131,7 +133,7 @@ export function registerVideoContinuityReviewRoutes(app: FastifyInstance, contex
       const sources = { final_prompt: input.prompt, generation_duration: input.generation_duration,
         generation_mode: input.mode, generate_audio: input.generate_audio, ...before.publicSource }
       const result = await withModelOperationStage('continuity_review', () => generateStructuredOutput('video_continuity_review', resultSchema,
-        (prompt, contract) => context.generateText(projectId, input.model_id, prompt, contract, controller.signal, images),
+        (prompt, contract) => withReasoning(() => context.generateText(projectId, input.model_id, prompt, contract, controller.signal, images)),
         videoContinuityReviewInstructions(sources, evidence, input.modify_audio),
         { signal: controller.signal, validate: value => validateVideoContinuityFindings(value.findings, sources, images.length) }))
       if ((await snapshot(projectId, input)).signature !== before.signature) fail('分镜、选用素材或取段已在核对期间变化，请重新核对', 409)

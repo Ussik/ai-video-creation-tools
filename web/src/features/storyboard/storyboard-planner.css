@@ -144,3 +144,49 @@ div.storyboard-planner-error { display: grid; flex-shrink: 0; gap: 8px; }
 .storyboard-planner-actions.has-reference-actions { justify-content: flex-end; flex-wrap: wrap; }
 .storyboard-planner-actions.has-reference-actions .storyboard-planner-reference-actions { display: flex; width: auto; margin: 0; }
 .storyboard-planner-actions.has-reference-actions .storyboard-planner-primary { min-width: 112px; }
+
+/* Page presentation keeps the same guarded workflow, but fills the project workbench. */
+.storyboard-planner-page.mantine-Modal-content { width: 100%; max-width: none; height: 100dvh; max-height: none; border: 0; border-radius: 0; }
+.storyboard-planner-page .storyboard-planner-header { display: none; }
+.storyboard-planner-page .storyboard-planner-body { height: 100%; }
+.storyboard-planner-page .storyboard-planner-workspace { min-height: 0; }
+@media (max-width: 720px) { .storyboard-planner-page .storyboard-planner-workspace { grid-template-columns: 1fr; } }
+
+/* Full-page prototype chrome */
+.storyboard-planner-page-header {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(0, 2fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 22px;
+  flex: none;
+  min-height: 72px;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--fc-border-soft);
+  background: var(--fc-surface);
+}
+.storyboard-planner-page-header > div { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.storyboard-planner-page-header strong { color: var(--fc-text); font-size: 13px; font-weight: 600; }
+.storyboard-planner-page-header > div > span { color: var(--fc-text-muted); }
+.storyboard-planner-page-header nav { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--fc-text-subtle); }
+.storyboard-planner-page-header nav > :is(button, span) { display: inline-flex; align-items: center; gap: 7px; color: var(--fc-text-muted); font-size: 11px; white-space: nowrap; }
+.storyboard-planner-page-header nav button { padding: 4px; border-radius: 5px; }
+.storyboard-planner-page-header nav button:hover:not(:disabled) { background: var(--fc-surface-hover); }
+.storyboard-planner-page-header nav [aria-current="step"] { color: var(--fc-primary); }
+.storyboard-planner-page-header nav b { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid var(--fc-border); border-radius: 50%; font-size: 9px; font-weight: 500; }
+.storyboard-planner-page-header nav [aria-current="step"] b { border-color: var(--fc-primary); background: var(--fc-primary-soft); }
+.storyboard-planner-page .storyboard-planner-workspace { flex: 1; }
+@media (max-width: 1024px) {
+  .storyboard-planner-page-header { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 16px; }
+  .storyboard-planner-page-header nav { grid-column: 1 / -1; justify-content: flex-start; overflow-x: auto; }
+  .storyboard-planner-page-header nav > * { flex: none; }
+}
+
+.storyboard-mode-section h3 { margin: 0 0 14px; font-size: 15px; }
+.storyboard-mode-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(168px, 100%), 1fr)); gap: 10px; }
+.storyboard-mode-option {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 9px;
+  min-height: 106px; padding: 15px 13px; border: 1px solid var(--fc-border);
+  border-radius: 8px; background: var(--fc-surface); color: var(--fc-text); text-align: left;
+}
+.storyboard-mode-option[aria-pressed='true'] { border-color: var(--fc-primary); background: var(--fc-primary-soft); }
+.storyboard-mode-option small { color: var(--fc-text-muted); }

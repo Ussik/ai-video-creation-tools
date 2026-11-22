@@ -86,6 +86,30 @@ test('optimization starts with the default text model, retains a manual choice a
   } finally { await view.close() }
 })
 
+test('task reasoning is sent for the selected model and clears on model switch', async () => {
+  const catalog: Model[] = [{ ...models[0], task_reasoning_options: [{ value: 'high' }] },
+    { ...models[0], id: 'next', name: '另一模型', task_reasoning_options: [{ value: 'high' }] }]
+  const requests: Array<Record<string, unknown>> = []
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(String(options?.body)))
+    return Response.json({ prompt: '优化建议', changes: [] })
+  }
+  const view = await mount(catalog)
+  try {
+    await chooseModel('text')
+    const selector = document.querySelector<HTMLInputElement>('[aria-label="推理等级"]')!
+    await act(() => selector.click())
+    const high = document.querySelector<HTMLElement>('[role="option"][value="high"]')!
+    await act(() => high.click())
+    await act(async () => button('生成优化建议').click())
+    assert.deepEqual(requests[0]?.text_generation_options, { reasoning: 'high' })
+    await chooseModel('next')
+    await act(async () => button('继续调整').click())
+    assert.equal(requests[1]?.model_id, 'next')
+    assert.equal(requests[1]?.text_generation_options, undefined)
+  } finally { await view.close() }
+})
+
 test('opening is free of model calls; explicit optimization returns an editable comparison and applying does not generate images', async () => {
   const requests: Array<{ url: string; body: unknown }> = []
   globalThis.fetch = async (url, options) => {

@@ -207,8 +207,11 @@ export function createStoryboardPlanningTasks(options: Options) {
         // Retain local review audit and original responses after success.
         // Other intermediate rules/plans can be released once no paid work remains.
         if (!['needs_work', 'inconclusive', 'review_inconclusive_needs_user', 'pending_review'].includes(result.directing_review?.status || '')) {
+          const reviewCode = result.directing_review?.error?.code || ''
+          const keepUnsettledReview = ['structured_initial_delivery_pending', 'storyboard_review_timeout'].includes(reviewCode)
           state.steps = { [storyboardPlanningBudgetKey]: state.steps[storyboardPlanningBudgetKey],
-            ...Object.fromEntries(Object.entries(state.steps).filter(([key]) => /:quality:v1:.*:(?:report|recheck|repair)(?::(?:relation_rejected|relation_correction|structured_output:v1))?$/.test(key))) }
+            ...Object.fromEntries(Object.entries(state.steps).filter(([key]) => /:quality:v1:.*:(?:report|recheck|repair)(?::(?:relation_rejected|relation_correction|structured_output:v1))?$/.test(key) ||
+              keepUnsettledReview && /^(?:director_review|recheck):structured_output:v1:/.test(key))) }
         }
       } catch (issue) {
         settleTime(live)

@@ -4,9 +4,10 @@ import { Paperclip } from 'lucide-react'
 import type { ScriptSourceDocument } from '@video-studio/shared/script/script-source-document'
 import './director-source-context.css'
 
-export default function DirectorSourceContext({ source, starting = false, pollError = false, children }: {
+export default function DirectorSourceContext({ source, starting = false, disabled = false, pollError = false, children }: {
   source: ScriptSourceDocument
   starting?: boolean
+  disabled?: boolean
   pollError?: boolean
   children: ReactNode
 }) {
@@ -35,7 +36,7 @@ export default function DirectorSourceContext({ source, starting = false, pollEr
     onChange={value => { manualChoice.current = true; setOpen(value === 'source') }}
     keepMounted keepMountedMode="display-none" transitionDuration={120}>
     <Accordion.Item value="source">
-      <Accordion.Control className="sd-source-context-toggle">
+      <Accordion.Control className="sd-source-context-toggle" disabled={disabled}>
         <span className="sd-source-context-label"><Paperclip size={14} aria-hidden="true" /><span>创作依据 · {source.revision ? '有效稿' : '原稿'} 1 份</span></span>
         <span className={`sd-source-context-status${needsAttention ? ' needs-attention' : ''}`} role="status">{statusLabel}</span>
       </Accordion.Control>

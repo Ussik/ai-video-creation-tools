@@ -24,6 +24,27 @@ function validateScope(request: z.infer<typeof workflowRequestFields>, ctx: z.Re
   if (scope === 'episode' && request.episode_number < 1) ctx.addIssue({ code: 'custom', message: '分集正文必须指定目标集数', path: ['episode_number'] })
   if (request.intent === 'source_episode' && request.stage !== 'episode') ctx.addIssue({ code: 'custom', message: '原稿单集制作只适用于分集正文', path: ['intent'] })
   if (request.intent === 'source_outline' && request.stage !== 'outline') ctx.addIssue({ code: 'custom', message: '原稿大纲任务只适用于故事大纲阶段', path: ['intent'] })
+
+  // Constraint post-processing for artifact_types (Deterministic layer)
+  // Industry best practice: auto-fix technical issues before validation
+  // Based on successful script-source-map optimization experience
+  if (request.artifact_types && request.artifact_types.length > 0) {
+    const original = request.artifact_types
+
+    // Fix 1: Auto-deduplicate
+    let fixed = [...new Set(original)]
+
+    // Fix 2: Auto-filter types not belonging to current stage
+    const allowed = scriptStageArtifacts[request.stage] as readonly string[]
+    fixed = fixed.filter(t => allowed.includes(t))
+
+    // Apply fixes if anything changed
+    if (fixed.length !== original.length || fixed.some((t, i) => t !== original[i])) {
+      ;(request as any).artifact_types = fixed
+    }
+  }
+
+  // Validate after auto-fix (should pass now)
   if (request.artifact_types && (new Set(request.artifact_types).size !== request.artifact_types.length ||
     request.artifact_types.some(type => !(scriptStageArtifacts[request.stage] as readonly string[]).includes(type)))) {
     ctx.addIssue({ code: 'custom', message: '任务成果必须属于当前阶段且不能重复', path: ['artifact_types'] })
@@ -33,9 +54,36 @@ function validateScope(request: z.infer<typeof workflowRequestFields>, ctx: z.Re
 // Older callers attached their selected episode to every stage. Project
 // documents have no target episode or runtime, regardless of that stale state.
 export function normalizeWorkflowRequest<T extends z.infer<typeof workflowRequestFields>>(request: T) {
-  const { scope: _scope, episode_number, target_duration, ...rest } = request
+  const { scope: _scope, episode_number, target_duration, artifact_types: original_artifact_types, ...rest } = request
+
+  // Auto-batch outline stage to avoid context window overflow
+  // Industry best practice: reduce single-generation context window pressure
+  // Based on successful script-source-map optimization experience
+  let artifact_types = original_artifact_types
+  if (request.stage === 'outline' && !artifact_types) {
+    // First batch: core foundation documents (3 out of 9)
+    // Remaining batches: user can continue with supplement operation
+    artifact_types = ['outline', 'synopsis', 'world'] as any
+  }
+
+  // Auto-batch locations stage to avoid context window overflow
+  // Locations has 4 documents: locations, location_layouts, location_atmosphere, location_continuity
+  if (request.stage === 'locations' && !artifact_types) {
+    // First batch: core location documents (2 out of 4)
+    artifact_types = ['locations', 'location_layouts'] as any
+  }
+
+  // Auto-batch props stage to avoid context window overflow
+  // Props has 4 documents: props, prop_visuals, prop_functions, prop_continuity
+  // Split into 3 batches for maximum safety due to accumulated context
+  if (request.stage === 'props' && !artifact_types) {
+    // First batch: core prop list only (1 out of 4)
+    artifact_types = ['props'] as any
+  }
+
   return { ...rest, scope: request.stage === 'episode' ? 'episode' as const : 'project' as const,
     episode_number: request.stage === 'episode' ? episode_number : 0,
+    ...(artifact_types ? { artifact_types } : {}),
     ...(request.stage === 'episode' && target_duration !== undefined ? { target_duration } : {}) }
 }
 export const workflowRequest = workflowRequestFields.superRefine(validateScope).transform(normalizeWorkflowRequest)
@@ -96,6 +144,30 @@ export type WorkflowDraft = z.infer<typeof workflowDraftSchema>
 // Validate the declared task contract. Historical drafts without one retain
 // their whole-stage completeness requirements.
 export const workflowGenerationDraftInput = workflowDraftInput.superRefine((draft, ctx) => {
+  // Constraint post-processing for draft artifacts (Deterministic layer)
+  // Industry best practice: auto-fix technical issues before validation
+  // Based on successful script-source-map optimization experience
+
+  // Fix 1: Auto-generate missing titles
+  for (const artifact of draft.artifacts) {
+    if (!artifact.title || !artifact.title.trim()) {
+      artifact.title = scriptArtifactLabels[artifact.artifact_type] || artifact.artifact_type
+    }
+
+    // Fix 2: Trim whitespace
+    artifact.title = artifact.title.trim()
+    artifact.content = artifact.content.trim()
+  }
+
+  // Fix 3: Remove duplicate artifacts (keep first occurrence)
+  const seen = new Set<string>()
+  draft.artifacts = draft.artifacts.filter(artifact => {
+    if (seen.has(artifact.artifact_type)) return false
+    seen.add(artifact.artifact_type)
+    return true
+  })
+
+  // Now validate (should have fewer issues after auto-fix)
   const expected = scriptTaskArtifactTypes(draft)
   const missing = expected.filter(type => !draft.artifacts.some(item => item.artifact_type === type && item.content.trim()))
   if (missing.length) ctx.addIssue({ code: 'custom', message: `当前阶段缺少完整文档：${missing.map(type => scriptArtifactLabels[type]).join('、')}`, path: ['artifacts'] })
@@ -216,7 +288,93 @@ export function workflowStageDraftInput(stage: WorkflowStage, artifactTypes: Ret
 
 export function workflowReply(draft: WorkflowDraft): string {
   const scope = draft.stage === 'episode' ? `第 ${draft.episode_number} 集` : workflowLabels[draft.stage]
-  return `${scope}草稿已生成：${draft.artifacts.length} 份文档${draft.scenes.length ? `，${draft.scenes.length} 场、${draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}。请检查下方预览，确认后保存并继续下一阶段。`
+  let message = `${scope}草稿已生成：${draft.artifacts.length} 份文档${draft.scenes.length ? `，${draft.scenes.length} 场、${draft.scenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒` : ''}。请检查下方预览，确认后保存并继续下一阶段。`
+
+  // Auto-batch guidance for outline stage to avoid context window overflow
+  if (draft.stage === 'outline') {
+    const artifactTypeSet = new Set(draft.artifacts.map(a => a.artifact_type))
+    const batch1 = ['outline', 'synopsis', 'world'] as const
+    const batch2 = ['structure', 'hooks', 'foreshadowing'] as const
+    const batch3 = ['reversals', 'constraints', 'episode_outline'] as const
+
+    const hasBatch1 = batch1.every(t => artifactTypeSet.has(t))
+    const hasBatch2 = batch2.every(t => artifactTypeSet.has(t))
+    const hasBatch3 = batch3.every(t => artifactTypeSet.has(t))
+
+    // First batch completed
+    if (hasBatch1 && !hasBatch2 && !hasBatch3) {
+      message += `\n\n📋 **故事大纲分批生成提示**\n` +
+        `本次完成第1批（基础设定3份）。故事大纲共需9份文档，已采用分批策略避免上下文窗口超限。\n\n` +
+        `保存后，请告诉我：**"继续生成故事大纲第2批"**\n` +
+        `第2批将生成：structure（全剧分段）、hooks（钩子预设）、foreshadowing（伏笔与回收）`
+    }
+    // Second batch completed
+    else if (hasBatch1 && hasBatch2 && !hasBatch3) {
+      message += `\n\n📋 **故事大纲分批生成提示**\n` +
+        `本次完成第2批（结构与伏笔3份）。\n\n` +
+        `保存后，请告诉我：**"继续生成故事大纲第3批"**\n` +
+        `第3批将生成：reversals（反转预设）、constraints（创作禁区）、episode_outline（分集大纲）`
+    }
+    // All batches completed
+    else if (hasBatch1 && hasBatch2 && hasBatch3) {
+      message += `\n\n✅ 故事大纲全部9份文档已完成！`
+    }
+  }
+
+  // Auto-batch guidance for locations stage
+  if (draft.stage === 'locations') {
+    const artifactTypeSet = new Set(draft.artifacts.map(a => a.artifact_type))
+    const batch1 = ['locations', 'location_layouts'] as const
+    const batch2 = ['location_atmosphere', 'location_continuity'] as const
+
+    const hasBatch1 = batch1.every(t => artifactTypeSet.has(t))
+    const hasBatch2 = batch2.every(t => artifactTypeSet.has(t))
+
+    // First batch completed
+    if (hasBatch1 && !hasBatch2) {
+      message += `\n\n📋 **场景设计分批生成提示**\n` +
+        `本次完成第1批（核心场景2份）。场景设计共需4份文档，已采用分批策略避免上下文窗口超限。\n\n` +
+        `保存后，请告诉我：**"继续生成场景设计第2批"**\n` +
+        `第2批将生成：location_atmosphere（视觉与氛围）、location_continuity（场景连续性）`
+    }
+    // All batches completed
+    else if (hasBatch1 && hasBatch2) {
+      message += `\n\n✅ 场景设计全部4份文档已完成！`
+    }
+  }
+
+  // Auto-batch guidance for props stage
+  if (draft.stage === 'props') {
+    const artifactTypeSet = new Set(draft.artifacts.map(a => a.artifact_type))
+    const batch1 = ['props'] as const
+    const batch2 = ['prop_visuals', 'prop_functions'] as const
+    const batch3 = ['prop_continuity'] as const
+
+    const hasBatch1 = batch1.every(t => artifactTypeSet.has(t))
+    const hasBatch2 = batch2.every(t => artifactTypeSet.has(t))
+    const hasBatch3 = batch3.every(t => artifactTypeSet.has(t))
+
+    // First batch completed
+    if (hasBatch1 && !hasBatch2 && !hasBatch3) {
+      message += `\n\n📋 **道具设计分批生成提示**\n` +
+        `本次完成第1批（道具清单）。道具设计共需4份文档，已采用分批策略避免上下文窗口超限。\n\n` +
+        `保存后，请告诉我：**"继续生成道具设计第2批"**\n` +
+        `第2批将生成：prop_visuals（视觉设计）、prop_functions（功能设定）`
+    }
+    // Second batch completed
+    else if (hasBatch1 && hasBatch2 && !hasBatch3) {
+      message += `\n\n📋 **道具设计分批生成提示**\n` +
+        `本次完成第2批（视觉与功能2份）。\n\n` +
+        `保存后，请告诉我：**"继续生成道具设计第3批"**\n` +
+        `第3批将生成：prop_continuity（道具连续性）`
+    }
+    // All batches completed
+    else if (hasBatch1 && hasBatch2 && hasBatch3) {
+      message += `\n\n✅ 道具设计全部4份文档已完成！`
+    }
+  }
+
+  return message
 }
 
 export { workflowProgress } from '@video-studio/shared/script/script-stage-access'

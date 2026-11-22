@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Badge, Button, Loader, Select, Textarea } from '@mantine/core'
 import { Clock3, Play, RefreshCw, ScanEye, TriangleAlert, X } from 'lucide-react'
-import type { VideoReviewReport } from '@video-studio/shared/media/video-review'
+import type { VideoReviewReport, VideoReviewResult } from '@video-studio/shared/media/video-review'
 import { api, json } from '../../shared/api/api'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { videoReviewTime, type VideoReviewModelOption } from './canvas-video-review'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning, type ReasoningModel } from '../models/TaskReasoningSelect'
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import './canvas-video-review.css'
 
 export interface CanvasVideoReviewPanelProps {
@@ -13,6 +15,7 @@ export interface CanvasVideoReviewPanelProps {
   assetId: string
   shotId?: string | null
   models: VideoReviewModelOption[]
+  reasoningModels?: ReasoningModel[]
   onSeek: (timeMs: number) => void
   onClose: () => void
 }
@@ -21,10 +24,16 @@ const categories = { action: '动作与表演', continuity: '人物与道具', c
 const verdicts = { usable: '可用', needs_work: '需要修改', uncertain: '待人工确认' }
 const checkLabels = { pass: '通过', issue: '有问题', uncertain: '未确认' }
 const colors = { usable: 'teal', needs_work: 'orange', uncertain: 'gray' }
+const paginationHints = {
+  resumable: '继续复核会复用已完成的页面，从中断处开始。',
+  delivery_pending: '补充请求的结果仍未确认。请核对模型服务商的记录，避免重复提交同一请求。',
+  needs_attention: '补充结果未能完成。可以缩小复核重点后另行复核。',
+}
 
-export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, models, onSeek, onClose }: CanvasVideoReviewPanelProps) {
+export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, models, reasoningModels, onSeek, onClose }: CanvasVideoReviewPanelProps) {
   const [instructions, setInstructions] = useState('')
   const [reviews, setReviews] = useState<VideoReviewReport[]>([])
+  const [partial, setPartial] = useState<{ report: Extract<VideoReviewResult, { pagination: unknown }>; instructions: string; options?: TextGenerationOptions }>()
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
@@ -34,22 +43,28 @@ export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, mod
   const [notice, setNotice] = useState('')
   const serial = useRef(0)
   const controller = useRef<AbortController | null>(null)
-  const selected = reviews.find(report => report.id === selectedId) || reviews[0]
+  const records: VideoReviewResult[] = partial ? [partial.report, ...reviews] : reviews
+  const selected = records.find(report => report.id === selectedId) || records[0]
+  const pagination = selected && 'pagination' in selected ? selected.pagination : undefined
   const model = models.find(item => item.id === modelId)
+  const reasoning = useTaskReasoning(model && reasoningModels?.find(item => item.id === model.id))
+  const samePartial = partial?.report.model_id === model?.id && partial?.instructions === instructions.trim()
+  const canResume = samePartial && partial?.report.pagination.state === 'resumable'
+  const paginationBlocked = samePartial && !canResume
   const path = `/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/video-reviews`
 
   useEffect(() => {
     const request = new AbortController()
     serial.current++
     controller.current?.abort()
-    setReviews([]); setSelectedId(''); setInstructions(''); setError(''); setNotice(''); setPending(false); setLoading(true)
+    setReviews([]); setPartial(undefined); setSelectedId(''); setInstructions(''); setError(''); setNotice(''); setPending(false); setLoading(true)
     void api<{ reviews: VideoReviewReport[] }>(path, { signal: request.signal }).then(result => {
       if (request.signal.aborted) return
       setReviews(current => [...current, ...result.reviews.filter(report => !current.some(item => item.id === report.id))])
     }).catch(issue => { if (!request.signal.aborted) setError(`读取复核记录失败：${issue instanceof Error ? issue.message : String(issue)}`) })
       .finally(() => { if (!request.signal.aborted) setLoading(false) })
     return () => { request.abort(); serial.current++; controller.current?.abort() }
-  }, [path])
+  }, [path, shotId])
   useEffect(() => {
     if (!pending) return
     const started = Date.now()
@@ -58,15 +73,23 @@ export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, mod
   }, [pending])
 
   async function review() {
-    if (pending || controller.current && !controller.current.signal.aborted || !model) return
+    if (pending || controller.current && !controller.current.signal.aborted || !model || paginationBlocked) return
     const turn = ++serial.current
     const request = new AbortController()
     controller.current = request
     setPending(true); setElapsed(0); setError(''); setNotice('')
     try {
-      const report = await api<VideoReviewReport>(path, { ...json('POST', { model_id: model.id, ...(shotId ? { shot_id: shotId } : {}), instructions: instructions.trim() }), signal: request.signal })
+      const options = samePartial ? partial.options : reasoning.request.text_generation_options
+      const report = await api<VideoReviewResult>(path, { ...json('POST', { model_id: model.id,
+        ...(options ? { text_generation_options: options } : {}),
+        ...(samePartial && /^partial-[a-f0-9]{64}$/.test(partial.report.id) ? { resume_review_id: partial.report.id } : {}),
+        ...(shotId ? { shot_id: shotId } : {}), instructions: instructions.trim() }), signal: request.signal })
       if (turn !== serial.current || request.signal.aborted) return
-      setReviews(current => [report, ...current.filter(item => item.id !== report.id)])
+      if ('pagination' in report) setPartial({ report, instructions: instructions.trim(), options })
+      else {
+        if (samePartial) setPartial(undefined)
+        setReviews(current => [report, ...current.filter(item => item.id !== report.id)])
+      }
       setSelectedId(report.id)
     } catch (issue) {
       if (turn === serial.current && !request.signal.aborted) setError(issue instanceof Error ? issue.message : String(issue))
@@ -84,23 +107,25 @@ export default function CanvasVideoReviewPanel({ projectId, assetId, shotId, mod
       <Select label="复核模型" aria-label="成片复核模型" placeholder="选择视频或图片理解模型" value={model?.id || null}
         data={models.map(item => ({ value: item.id, label: item.label }))} onChange={value => selectModel(value || '')}
         searchable allowDeselect={false} disabled={pending || !models.length} comboboxProps={{ zIndex: 350 }} />
+      <TaskReasoningSelect reasoning={reasoning} disabled={pending || samePartial} zIndex={350} />
       {!models.length && <Alert color="yellow" title="暂无可用的复核模型" icon={<TriangleAlert size={16} />}>请在模型设置中为已确认支持的文本模型开启图片理解或视频理解。</Alert>}
       {model?.inputMode === 'sampled_frames' && <p className="pc-video-review-hint">此模型检查按时间排列的抽样画面；连续运动、滑步速度及声音仍需播放确认。</p>}
       {model?.inputMode === 'native_video' && <p className="pc-video-review-hint">将视频交给所选模型理解；模型无法确认的动作或声音会保留为待确认项。</p>}
       <Textarea label="复核重点" aria-label="成片复核重点" placeholder="例如：确认跑入后站稳；背景居民按剧情保持静止。" value={instructions}
         onChange={event => setInstructions(event.currentTarget.value)} maxLength={4000} minRows={2} autosize maxRows={5} disabled={pending} />
-      <div className="pc-video-review-actions"><Button size="sm" leftSection={<ScanEye size={15} />} disabled={pending || !model} onClick={() => void review()}>{reviews.length ? '重新复核' : '开始复核'}</Button>
+      <div className="pc-video-review-actions"><Button size="sm" leftSection={<ScanEye size={15} />} disabled={pending || !model || paginationBlocked} onClick={() => void review()}>{canResume ? '继续复核' : records.length ? '重新复核' : '开始复核'}</Button>
         {pending && <Button variant="default" size="sm" onClick={cancel}>取消复核</Button>}</div>
-      {pending && <div className="pc-video-review-progress" role="status"><Loader size={14} /><span>正在分析画面 · 已等待 {elapsed} 秒，可取消后重试</span></div>}
+      {pending && <div className="pc-video-review-progress" role="status"><Loader size={14} /><span>正在分析画面 · 已等待 {elapsed} 秒</span></div>}
       {!!notice && <p className="pc-video-review-hint" role="status">{notice}</p>}
       {!!error && <Alert color="red" title="复核未完成" icon={<TriangleAlert size={16} />}>{error}</Alert>}
     </div>
     {loading && <div className="pc-video-review-progress" role="status"><Loader size={14} />正在读取复核记录</div>}
     {selected && <div className="pc-video-review-report">
-      {reviews.length > 1 && <Select label="复核记录" aria-label="复核记录" value={selected.id} onChange={value => setSelectedId(value || '')}
-        data={reviews.map(report => ({ value: report.id, label: `${new Date(report.created_at).toLocaleString()} · ${report.model_name}` }))} allowDeselect={false} comboboxProps={{ zIndex: 350 }} />}
-      <div className="pc-video-review-verdict"><Badge color={colors[selected.verdict]} variant="light">{verdicts[selected.verdict]}</Badge>
+      {records.length > 1 && <Select label="复核记录" aria-label="复核记录" value={selected.id} onChange={value => setSelectedId(value || '')}
+        data={records.map(report => ({ value: report.id, label: `${'pagination' in report ? '未完成' : new Date(report.created_at).toLocaleString()} · ${report.model_name}` }))} allowDeselect={false} comboboxProps={{ zIndex: 350 }} />}
+      <div className="pc-video-review-verdict"><Badge color={colors[selected.verdict]} variant="light">{pagination ? '复核未完成' : verdicts[selected.verdict]}</Badge>
         <span>{selected.input_mode === 'native_video' ? '视频理解' : '画面抽样'} · {selected.model_name}</span></div>
+      {pagination && <Alert color="yellow" title={`已完成 ${pagination.completed_pages} 页`}>{paginationHints[pagination.state]}</Alert>}
       {selected.stale && <Alert color="yellow" title="报告依据已变化" icon={<RefreshCw size={15} />}>镜头意图或素材已更新，请重新复核后判断。</Alert>}
       <p className="pc-video-review-summary">{selected.summary}</p>
       <div className="pc-video-review-duration"><Clock3 size={14} /><span>素材 {videoReviewTime(selected.duration_ms)}{selected.target_duration_ms !== null ? ` · 计划入片 ${(selected.target_duration_ms / 1000).toFixed(1)} 秒` : ''}</span></div>

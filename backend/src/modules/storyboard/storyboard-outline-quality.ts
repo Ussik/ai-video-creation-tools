@@ -13,10 +13,55 @@ import { modelTaskPolicies } from '../generation/model-task-policy.js'
 import type { StoryboardPlanningControl } from './storyboard-planning-tasks.js'
 
 type Outline = { scenes: Array<{ scene_id: string; scene_direction: unknown; shots: unknown[] }> }
-const editable = new Set(['prompt', 'start_state', 'end_state', 'cut_note', 'scene_direction.anchors', 'scene_direction.blocking',
-  'scene_direction.axis', 'scene_direction.dramatic_progression'])
+
+/** Extract editable fields from schema dynamically to avoid hardcoded whitelist.
+ * Industry best practice: avoid hardcoded whitelists that require manual maintenance.
+ * Based on successful script-source-map optimization. */
+function extractEditableFields(schema: z.ZodType): Set<string> {
+  try {
+    const jsonSchema = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as any
+    const shotSchema = jsonSchema.properties?.scenes?.items?.properties?.shots?.items
+
+    if (!shotSchema?.properties) return getDefaultEditableFields()
+
+    // All fields except readonly identifiers
+    const readonlyFields = new Set(['scene_id', 'shot_index', 'shot_id'])
+    const allFields = Object.keys(shotSchema.properties).filter(key => !readonlyFields.has(key))
+
+    // Add nested scene_direction fields
+    const sceneDirection = shotSchema.properties.scene_direction
+    if (sceneDirection?.properties) {
+      for (const key of Object.keys(sceneDirection.properties)) {
+        allFields.push(`scene_direction.${key}`)
+      }
+    }
+
+    return new Set(allFields)
+  } catch (error) {
+    // Fallback to default if extraction fails
+    return getDefaultEditableFields()
+  }
+}
+
+/** Default editable fields as fallback (backward compatible). */
+function getDefaultEditableFields(): Set<string> {
+  return new Set(['prompt', 'start_state', 'end_state', 'cut_note',
+    'scene_direction.anchors', 'scene_direction.blocking',
+    'scene_direction.axis', 'scene_direction.dramatic_progression'])
+}
+
 const invalid = (message: string): never => { throw Object.assign(new Error(message), { statusCode: 422, code: 'storyboard_outline_review_invalid' }) }
-function validateReport(report: StoryboardDirectingReview, outline: Outline, sourceTexts: string[], stage: 'outline_review' | 'recheck' = 'outline_review', preserveOriginal = false) {
+
+function validateReport(
+  report: StoryboardDirectingReview,
+  outline: Outline,
+  sourceTexts: string[],
+  stage: 'outline_review' | 'recheck' = 'outline_review',
+  preserveOriginal = false,
+  editableFields?: Set<string> // Optional: dynamically extracted or default
+) {
+  const editable = editableFields || getDefaultEditableFields()
+
   try {
     validateStoryboardReviewRelations(report.issues, outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1])
     const normalized = report.issues.map(issue => normalizeStoryboardEvidenceReferences(issue, outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1], true))
@@ -53,6 +98,10 @@ export async function ensureStoryboardOutlineQuality<T extends Outline>(input: {
   context: unknown; sourceTexts?: string[]
 }): Promise<T> {
   const { control } = input, sourceTexts = input.sourceTexts || []
+
+  // Extract editable fields dynamically from schema (avoid hardcoded whitelist)
+  const editableFields = extractEditableFields(input.schema)
+
   const prefix = `${input.outlineKey}:quality:v1:${storyboardValueSignature(input.outline)}`
   const active = () => control.signal.throwIfAborted()
   const markStage = (value: OutlineReviewStage) => {
@@ -69,7 +118,7 @@ export async function ensureStoryboardOutlineQuality<T extends Outline>(input: {
     const scenes = outline.scenes as Parameters<typeof validateStoryboardDirectingReview>[1]
     const rejectedKey = `${key}:relation_rejected`
     const validate = (value: StoryboardDirectingReview) => {
-      try { validateReport(value, outline, sourceTexts, stage, Object.hasOwn(control.steps, `${key}:relation_correction`)) }
+      try { validateReport(value, outline, sourceTexts, stage, Object.hasOwn(control.steps, `${key}:relation_correction`), editableFields) }
       catch (error) {
         if (correctable(error) && !Object.hasOwn(control.steps, rejectedKey)) {
           control.retain(rejectedKey, { report: structuredClone(value), report_hash: storyboardValueSignature(value), diagnostics: (error as { diagnostics: string }).diagnostics })
@@ -84,7 +133,7 @@ export async function ensureStoryboardOutlineQuality<T extends Outline>(input: {
         if (!correctable(error)) throw error
         const correct = (error as { evidence_scope_diagnostics?: unknown }).evidence_scope_diagnostics ? correctStoryboardOutlineEvidence : correctStoryboardOutlineRelations
         report = await correct({ report, key, scenes, generate: input.generate, control,
-          validate: corrected => validateReport(corrected, outline, sourceTexts, stage, true) })
+          validate: corrected => validateReport(corrected, outline, sourceTexts, stage, true, editableFields) })
       }
       active(); control.retain(key, report)
       reportModelResult({ stage, phase: 'quality', status: report.issues.some(issue => issue.severity === 'error') ? 'needs_work' : 'passed', issue_count: report.issues.length })

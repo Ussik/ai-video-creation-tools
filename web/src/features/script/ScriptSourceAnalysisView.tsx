@@ -56,9 +56,10 @@ function SourceQualitySummary({ analysis }: { analysis: ScriptSourceAnalysis }) 
 }
 
 export type SourceQualityRoundStart = { quality_scope: NonNullable<NonNullable<ScriptSourceAnalysis['quality_summary']>['confirmation_scope']>; confirm_new_quality_round: true }
-export function ScriptSourceAnalysisStatus({ source, extractionOnly = false, starting, unavailable, pollError, hasPreviousFailure, onStart, onPause, onResolveRequest, onRevalidate, onRecover, onCancelRecovery, recovery, onRequestDetails }: {
+export function ScriptSourceAnalysisStatus({ source, extractionOnly = false, showPhasePrefix = true, starting, unavailable, pollError, hasPreviousFailure, onStart, onPause, onResolveRequest, onRevalidate, onRecover, onCancelRecovery, recovery, onRequestDetails }: {
   source: ScriptSourceDocument; extractionOnly?: boolean; starting: boolean; unavailable: boolean; pollError: boolean; hasPreviousFailure?: boolean; onStart: (confirmation?: SourceQualityRoundStart) => void; onPause?: () => void; onResolveRequest?: () => void; onRevalidate?: () => void
   onRequestDetails?: () => void; onRecover?: () => void; onCancelRecovery?: () => void; recovery?: SourceRecoveryPresentation | null
+  showPhasePrefix?: boolean
 }) {
   const analysis = source.analysis
   const qualitySummary = extractionOnly ? undefined : analysis?.quality_summary
@@ -228,14 +229,14 @@ export function ScriptSourceAnalysisStatus({ source, extractionOnly = false, sta
           ? qualitySummary && (qualitySummary.review === 'pending' || qualitySummary.access !== 'usable')
             ? `剧本地图已保存 · ${qualitySummary.review === 'pending' ? '待独立核对' : qualitySummary.access === 'scoped' ? '部分范围待处理' : '质量核对未通过'}`
             : `${revised ? '当前有效稿的' : ''}剧本地图已准备 · ${analysis.sections.length} 段剧情`
-          : analysis ? `当前阶段：${phaseLabel}` : revised ? '当前有效稿已修订，可更新剧本地图' : '原剧本已保存，可开始 AI 分析'}</span>
+          : analysis ? `${showPhasePrefix ? '当前阶段：' : ''}${phaseLabel}` : revised ? '当前有效稿已修订，可更新剧本地图' : '原剧本已保存，可开始 AI 分析'}</span>
         {stateLabel && <span className="sd-analysis-state" data-state={analysis?.status}>{pending && !pollError ? <LoaderCircle size={11} className="script-director-spinner" /> : null}{stateLabel}</span>}
       </div>
       {!pending && analysis?.status !== 'ready' && <Button variant="light" size="compact-xs" loading={starting}
         disabled={actionUnavailable} leftSection={analysis?.status === 'failed' && !resumeBlocked ? <RotateCcw size={12} /> : undefined}
         onClick={act}>{actionLabel}</Button>}
       {extractionOnly && !pending && reconcile && onRequestDetails && <Button variant="subtle" size="compact-xs" onClick={onRequestDetails}>请求详情</Button>}
-      {pending && (recovering ? onCancelRecovery : onPause) && <Button variant="subtle" size="compact-xs" loading={starting}
+      {pending && (recovering ? onCancelRecovery : onPause) && <Button className="sd-analysis-pause" variant="subtle" size="compact-xs" loading={starting}
         onClick={recovering ? onCancelRecovery : onPause} leftSection={<Pause size={12} />}>{recovering ? '取消等待' : '暂停分析'}</Button>}
       {analysis?.status === 'ready' && (!qualitySummary || qualitySummary.review !== 'pending' && qualitySummary.access === 'usable') && <CheckCircle2 size={16} className="sd-analysis-ready" />}
     </div>
@@ -285,8 +286,8 @@ export function ScriptSourceAnalysisStatus({ source, extractionOnly = false, sta
   </section>
 }
 
-function SourcePreviewContent({ source }: { source: ScriptSourceDocument }) {
-  return <div className="sd-source-preview-body">{/\.(?:md|markdown)$/i.test(source.filename)
+function SourcePreviewContent({ source, reading = false }: { source: ScriptSourceDocument; reading?: boolean }) {
+  return <div className="sd-source-preview-body">{/\.(?:md|markdown)$/i.test(source.filename) || (reading && /^#{1,6} [^\n]+/m.test(source.content))
     ? <ScriptMessageContent text={source.content} tableLabel="剧本表格" />
     : source.content}</div>
 }
@@ -328,8 +329,8 @@ export function SourceRequestDetails({ source, opened, onClose }: { source: Scri
   </section>
 }
 
-export function ScriptSourcePreview({ source, sourceOnly = false, defaultTab = 'current', onReviewFeedback, reviewFeedbackSubmitting = false, reviewFeedbackUnavailable }: {
-  source: ScriptSourceDocument; sourceOnly?: boolean; defaultTab?: 'current' | 'map' | 'story'; onReviewFeedback?: (feedback: string) => Promise<boolean>; reviewFeedbackSubmitting?: boolean; reviewFeedbackUnavailable?: string
+export function ScriptSourcePreview({ source, sourceOnly = false, reading = false, defaultTab = 'current', onReviewFeedback, reviewFeedbackSubmitting = false, reviewFeedbackUnavailable }: {
+  source: ScriptSourceDocument; sourceOnly?: boolean; reading?: boolean; defaultTab?: 'current' | 'map' | 'story'; onReviewFeedback?: (feedback: string) => Promise<boolean>; reviewFeedbackSubmitting?: boolean; reviewFeedbackUnavailable?: string
 }) {
   const analysis = sourceOnly ? null : source.analysis
   const [original, setOriginal] = useState<ScriptSourceDocument | null>(null)
@@ -348,9 +349,9 @@ export function ScriptSourcePreview({ source, sourceOnly = false, defaultTab = '
       .catch(() => { if (active) setOriginalError(true) })
     return () => { active = false }
   }, [source.project_id, source.updated_at, source.revision])
-  return <><Tabs defaultValue={defaultTab} className="sd-source-preview-tabs">
+  return <><Tabs defaultValue={defaultTab} variant={reading ? 'pills' : undefined} className="sd-source-preview-tabs">
     <Tabs.List><Tabs.Tab value="current">{source.revision ? '当前有效稿' : '原剧本'}</Tabs.Tab>{!!source.revision && <Tabs.Tab value="original">上传原稿</Tabs.Tab>}{!sourceOnly && <><Tabs.Tab value="map" disabled={!analysis?.sections.length}>剧本地图</Tabs.Tab><Tabs.Tab value="story" disabled={!analysis?.story}>全剧信息</Tabs.Tab></>}</Tabs.List>
-    <Tabs.Panel value="current"><SourcePreviewContent source={source} /></Tabs.Panel>
+    <Tabs.Panel value="current"><SourcePreviewContent source={source} reading={reading} /></Tabs.Panel>
     {!!source.revision && <Tabs.Panel value="original"><p className="sd-source-preview-hint">上传时的原稿保留供追溯，后续创作使用当前有效稿。</p>{originalError
       ? <div className="sd-source-preview-body">读取上传原稿失败，请重新打开文稿预览。</div>
       : original ? <SourcePreviewContent source={original} /> : <div className="sd-source-preview-body">正在读取上传原稿…</div>}</Tabs.Panel>}

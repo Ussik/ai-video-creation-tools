@@ -1,3 +1,4 @@
+import { bindTaskReasoningById, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { randomUUID } from 'node:crypto'
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
@@ -146,7 +147,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
     try {
     const { id } = idParams.parse(request.params), project = required<Project>('projects', id)
     const input = z.object({
-      model_id: z.string().min(1), stage: z.enum(['image_prompt', 'video_prompt']), prompt: z.string().trim().min(1).max(80_000),
+      model_id: z.string().min(1), text_generation_options: textGenerationOptionsInput, stage: z.enum(['image_prompt', 'video_prompt']), prompt: z.string().trim().min(1).max(80_000),
       prompt_document: z.boolean().optional(), restart: z.boolean().optional(),
       action: z.enum(['generate', 'review']).default('generate'), candidate_prompt: z.string().trim().min(1).max(80_000).optional(),
       source_signature: z.string().min(1).optional(),
@@ -334,6 +335,7 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       references: input.reference_asset_ids.map(assetId => all('SELECT id, project_id, kind, filename, path FROM assets WHERE id=?', assetId)),
     })
     const version = contextVersion(), modelIdentity = creativeModelIdentity(input.model_id)
+    const withReasoning = bindTaskReasoningById(input.model_id, input.text_generation_options)
     const sourceSignature = creativeInputHash({ version, model: modelIdentity, source: body, originalDocument, adjustmentRequest,
       stage: input.stage, configuration, referenceIds: input.reference_asset_ids, board: boardDocument || !!profile })
     if (input.action === 'review' && (!input.candidate_prompt || input.source_signature !== sourceSignature)) {
@@ -359,9 +361,9 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
       }
     }
     let operationSignal = controller.signal
-    const generate = (text: string, contract?: OutputContract) => images.length
+    const generate = (text: string, contract?: OutputContract) => withReasoning(() => images.length
       ? context.generateWithImages!(id, input.model_id, text, images, contract, operationSignal)
-      : context.generateText(id, input.model_id, text, contract, operationSignal)
+      : context.generateText(id, input.model_id, text, contract, operationSignal))
     const shotContext = shot ? { title: shot.title, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note } : null
     const bindingContext = promptBindings.map(({ kind, name, variant, revision, definition, view_requirements }) => ({ kind, name, variant, revision, definition, view_requirements }))
     const profileContext = profile ? { kind: profile.kind, name: profile.name, variant: profile.variant,
@@ -411,7 +413,8 @@ export function registerSkillRoutes(app: FastifyInstance, context: {
         target_model: target ? `${target.name} ${target.remote_id}` : undefined, target_dialect: configuredVideoPromptDialect(target) },
     })
     const candidateSchema = z.object({ prompt: z.string().trim().min(1).max(80_000) }).strict()
-    const candidateIdentity = { version: 4, context: version, model: modelIdentity, task, rules: rules.text }
+    const candidateIdentity = { version: 4, context: version, model: modelIdentity, task, rules: rules.text,
+      ...(input.text_generation_options?.reasoning ? { reasoning: input.text_generation_options.reasoning } : {}) }
     const namespace = `prompt-refinement:${creativeInputHash([input.shot_id, input.profile_id, input.stage, body, adjustmentRequest, publicOperationId || (input.action === 'review' ? operationId : null), input.action === 'review' ? input.candidate_prompt : null])}`
     return await withModelAdmission(`creative:${id}:${namespace}`, controller.signal, async () => {
       const steps = creativeGenerationSteps(id, namespace, candidateIdentity, controller.signal, input.restart)

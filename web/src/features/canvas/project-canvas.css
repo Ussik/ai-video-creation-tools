@@ -446,6 +446,8 @@
   background: var(--fc-surface-hover);
   box-shadow: 0 18px 38px #0a0a0aa8;
 }
+/* Mantine's focus target must stay focusable without taking a grid cell. */
+.pc-add-menu > [role="presentation"][data-autofocus] { position: absolute; inset: 0 auto auto 0; }
 .pc-add-menu-dock {
   left: 50%;
   bottom: calc(17px + env(safe-area-inset-bottom) + 64px);
@@ -943,7 +945,7 @@
 
 /* Reserve the sidebar's actual width for every bottom control group. */
 .pc-body-sidebar-open { --pc-tools-inset: calc(18px + var(--pc-sidebar-width)); }
-.pc-body-sidebar-open .pc-node-list-toggle.mantine-ActionIcon-root { left: calc(var(--pc-tools-inset) + 12px); }
+.pc-body-sidebar-open .pc-node-list-toggle.mantine-ActionIcon-root { left: calc(var(--pc-tools-inset) + 4px); }
 .pc-body-sidebar-open .pc-flow-utility { left: calc(var(--pc-tools-inset) + 64px); max-width: calc(100% - var(--pc-tools-inset) - 76px); }
 .pc-body-sidebar-open > .pc-create-dock,
 .pc-body-sidebar-open > .pc-add-menu-dock { left: calc((100% + var(--pc-tools-inset)) / 2); max-width: calc(100% - var(--pc-tools-inset) - 32px); }
@@ -2784,3 +2786,42 @@
 }
 .project-canvas .pc-node.is-selected { box-shadow: var(--fc-node-shadow), 0 0 0 1px var(--fc-primary-soft); }
 .project-canvas .pc-node.is-compact { box-shadow: none; }
+
+/* Local prototype workspace tabs. */
+.project-canvas .pc-workspace-tabs { display:flex; align-items:center; gap:18px; min-width:0; margin-inline:auto; }
+.project-canvas .pc-workspace-tabs button { min-width:auto; min-height:34px; padding:0 2px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--fc-text-muted); font-size:12px; }
+.project-canvas .pc-workspace-tabs button:hover { color:var(--fc-text); }
+.project-canvas .pc-workspace-tabs button.is-active { color:var(--fc-text); border-bottom-color:var(--fc-primary); }
+@media (max-width:780px) { .project-canvas .pc-workspace-tabs { gap:10px; overflow-x:auto; margin-inline:0; } .project-canvas .pc-workspace-tabs button { font-size:11px; } }
+
+/* Local prototype workspace tabs. */
+.project-canvas .pc-workspace-tabs { display:flex; align-items:center; gap:18px; min-width:0; margin-inline:auto; }
+.project-canvas .pc-workspace-tabs button { min-width:auto; min-height:34px; padding:0 2px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--fc-text-muted); font-size:12px; }
+.project-canvas .pc-workspace-tabs button:hover { color:var(--fc-text); }
+.project-canvas .pc-workspace-tabs button.is-active { color:var(--fc-text); border-bottom-color:var(--fc-primary); }
+@media (max-width:780px) { .project-canvas .pc-workspace-tabs { gap:10px; overflow-x:auto; margin-inline:0; } .project-canvas .pc-workspace-tabs button { font-size:11px; } }
+
+.project-canvas .pc-composer-docked {
+  position: absolute;
+  z-index: 16;
+  inset: 0 0 0 auto;
+  width: 270px;
+  pointer-events: auto;
+  border-left: 1px solid var(--fc-border-soft);
+  background: var(--fc-surface);
+}
+.project-canvas .pc-composer-docked > .pc-prompt-composer {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  max-height: none;
+  padding: 12px;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent;
+}
+.pc-composer-docked-head { flex: none; display: grid; gap: 10px; }
+.pc-composer-docked-head > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pc-composer-docked-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.pc-composer-docked-head > img { width: 100%; aspect-ratio: 16 / 9; max-height: 170px; object-fit: cover; border-radius: 6px; }

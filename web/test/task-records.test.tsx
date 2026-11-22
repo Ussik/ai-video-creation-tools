@@ -75,23 +75,23 @@ async function search(container: Element, value: string) {
 test('status, task type and search compose; clearing filters restores tasks including archived-model results', async () => {
   const view = await mount()
   try {
-    assert.equal(view.container.querySelectorAll('tbody tr').length, 8)
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length, 8)
     await tab(view.container, '进行中')
-    assert.equal(view.container.querySelectorAll('tbody tr').length, 1)
-    assert.match(view.container.querySelector('tbody')!.textContent!, /排队中/)
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length, 1)
+    assert.match(view.container.querySelector('.task-records-list')!.textContent!, /排队中/)
     await tab(view.container, '失败')
-    assert.equal(view.container.querySelectorAll('tbody tr').length, 3)
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length, 3)
     await chooseCombobox(view.container.querySelector<HTMLInputElement>('input[aria-label="任务类型"]')!, '配音生成')
-    assert.equal(view.container.querySelectorAll('tbody tr').length, 1)
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length, 1)
     await search(view.container, ' 林晚 ')
-    assert.match(view.container.querySelector('tbody')!.textContent!, /林晚/)
+    assert.match(view.container.querySelector('.task-records-list')!.textContent!, /林晚/)
     await search(view.container, '不存在')
-    assert.equal(view.container.querySelector('table'), null)
+    assert.equal(view.container.querySelector('.task-records-list'), null)
     assert.match(view.container.textContent!, /没有符合条件的任务/)
     await act(() => button(view.container, '清除筛选').click())
-    assert.equal(view.container.querySelectorAll('tbody tr').length, 8)
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length, 8)
     await search(view.container, 'archived')
-    assert.match(view.container.querySelector('tbody')!.textContent!, /图片生成/)
+    assert.match(view.container.querySelector('.task-records-list')!.textContent!, /图片生成/)
     assert.deepEqual(view.events, [])
   } finally { await view.close() }
 })
@@ -125,7 +125,7 @@ test('result action opens existing image, video, audio and text assets without n
 test('empty history keeps available filters and offers direct canvas navigation', async () => {
   const view = await mount({ ...detail, jobs: [] })
   try {
-    assert.equal(view.container.querySelector('table'), null)
+    assert.equal(view.container.querySelector('.task-records-list'), null)
     assert.ok(view.container.querySelector('[aria-label="搜索任务"]'))
     assert.match(view.container.textContent!, /还没有任务记录/)
     await act(() => button(view.container, '进入画布').click())
@@ -137,14 +137,18 @@ test('manual refresh guards duplicate clicks, reports failure inline and allows 
   let reject!: (error: Error) => void, calls = 0
   const view = await mount(detail, async () => { calls++; if (calls === 1) return new Promise((_, fail) => { reject = fail }) })
   try {
-    const refresh = button(view.container, '刷新')
+    async function openRefresh() {
+      await act(() => button(view.container, '任务更多选项').click())
+      return button(document.body, '刷新')
+    }
+    const refresh = await openRefresh()
     await act(() => { refresh.click(); refresh.click() })
     assert.equal(calls, 1)
-    assert.equal(refresh.disabled, true)
     await act(async () => reject(new Error('服务暂不可用')))
     assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /服务暂不可用/)
-    assert.equal(refresh.disabled, false)
-    await act(async () => refresh.click())
+    const retry = await openRefresh()
+    assert.equal(retry.disabled, false)
+    await act(async () => retry.click())
     assert.equal(calls, 2)
     assert.equal(view.container.querySelector('[role="alert"]'), null)
   } finally { await view.close() }
@@ -178,7 +182,7 @@ test('uncertain restarted video tasks show verification and read-only original r
   })
   const view = await mount({ ...detail, jobs: [task] })
   try {
-    const row = view.container.querySelector('tbody tr')!
+    const row = view.container.querySelector('.task-records-list > [data-task-id]')!
     assert.match(row.textContent!, /视频生成/); assert.match(row.querySelector('.task-records-status')!.textContent!, /待核对/)
     assert.match(row.textContent!, /核对提供商任务记录与账单/)
     assert.doesNotMatch(row.textContent!, /重试|继续查询|恢复下载|优化提示词/)
@@ -197,8 +201,8 @@ test('video query continuation uses the existing job and exposes no prompt editi
     request: '{"prompt":"原提示词","reference_asset_ids":["fixed"]}' })
   const before = JSON.stringify(task), view = await mount({ ...detail, jobs: [task] })
   try {
-    assert.match(view.container.querySelector('tbody')!.textContent!, /可继续查询已有任务/)
-    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /恢复下载|优化提示词|重试/)
+    assert.match(view.container.querySelector('.task-records-list')!.textContent!, /可继续查询已有任务/)
+    assert.doesNotMatch(view.container.querySelector('.task-records-list')!.textContent!, /恢复下载|优化提示词|重试/)
     await act(() => button(view.container, '继续查询').click())
     assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
     assert.equal(JSON.stringify(task), before)
@@ -212,10 +216,10 @@ test('video download checkpoints retain their video identity when the model is r
       recovery_available: true, task_resume_available: true, error: '下载失败' })
     const view = await mount({ ...detail, jobs: [task] })
     try {
-      assert.match(view.container.querySelector('tbody')!.textContent!, /视频生成/)
-      assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /图片生成|继续查询|重试|优化提示词/)
+      assert.match(view.container.querySelector('.task-records-list')!.textContent!, /视频生成/)
+      assert.doesNotMatch(view.container.querySelector('.task-records-list')!.textContent!, /图片生成|继续查询|重试|优化提示词/)
       await chooseCombobox(view.container.querySelector<HTMLInputElement>('input[aria-label="任务类型"]')!, '视频生成')
-      assert.equal(view.container.querySelectorAll('tbody tr').length, 1)
+      assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length, 1)
       await act(() => button(view.container, '恢复下载').click())
       assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
       await act(() => view.container.querySelector<HTMLButtonElement>('[aria-label="查看任务信息"]')!.click())
@@ -230,8 +234,8 @@ test('legacy video recovery flags do not classify the task as an image or expose
     const task = job('legacy-video', 'failed', { model_id: 'video', ...flags })
     const view = await mount({ ...detail, jobs: [task] })
     try {
-      assert.match(view.container.querySelector('tbody')!.textContent!, /视频生成/)
-      assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /图片生成|重试/)
+      assert.match(view.container.querySelector('.task-records-list')!.textContent!, /视频生成/)
+      assert.doesNotMatch(view.container.querySelector('.task-records-list')!.textContent!, /图片生成|重试/)
       await act(() => button(view.container, flags.recovery_available ? '恢复下载' : '继续查询').click())
       assert.deepEqual(view.events, [{ type: 'retry', id: task.id }])
     } finally { await view.close() }
@@ -242,8 +246,8 @@ test('explicit unavailable video recovery never falls back to paid retry despite
   const view = await mount({ ...detail, jobs: [job('blocked', 'failed', { model_id: 'video', recovery_action: null,
     recovery_available: true, task_resume_available: true })] })
   try {
-    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /恢复下载|继续查询|重试/)
-    assert.match(view.container.querySelector('tbody')!.textContent!, /核对提供商任务记录与账单/)
+    assert.doesNotMatch(view.container.querySelector('.task-records-list')!.textContent!, /恢复下载|继续查询|重试/)
+    assert.match(view.container.querySelector('.task-records-list')!.textContent!, /核对提供商任务记录与账单/)
   } finally { await view.close() }
 })
 
@@ -251,7 +255,7 @@ test('download-only image recovery suppresses optimization even when old flags a
   const view = await mount({ ...detail, jobs: [job('saved-image', 'failed', { recovery_action: 'download', recovery_modality: 'image',
     recovery_available: false, error: 'content_policy_violation', request: '{"prompt":"旧提示词"}' })] })
   try {
-    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /优化提示词|回到画布|继续查询/)
+    assert.doesNotMatch(view.container.querySelector('.task-records-list')!.textContent!, /优化提示词|回到画布|继续查询/)
     await act(() => button(view.container, '恢复下载').click())
     assert.deepEqual(view.events, [{ type: 'retry', id: 'saved-image' }])
   } finally { await view.close() }
@@ -263,10 +267,10 @@ test('unrelated export retries and active generation polling labels keep their e
   try {
     await act(() => button(view.container, '重试').click())
     assert.deepEqual(view.events, [{ type: 'retry', id: 'export-retry' }])
-    assert.match(view.container.textContent!, /1 个任务进行中/)
+    assert.equal(view.container.querySelector('.task-records-summary strong')?.textContent, '1')
     await tab(view.container, '进行中')
-    assert.match(view.container.querySelector('tbody')!.textContent!, /进行中/)
-    assert.doesNotMatch(view.container.querySelector('tbody')!.textContent!, /待核对|重试/)
+    assert.match(view.container.querySelector('.task-records-list')!.textContent!, /进行中/)
+    assert.doesNotMatch(view.container.querySelector('.task-records-list')!.textContent!, /待核对|重试/)
   } finally { await view.close() }
 })
 
@@ -301,7 +305,7 @@ test('AI operation history separates completed execution from candidate quality 
     assert.equal(view.container.querySelector('[aria-label="内部操作与恢复记录"]'),null)
     assert.equal(calls.some(call=>call.endsWith('/ai-operations')),false)
     await act(async()=>button(view.container,'任务更多选项').click())
-    const historyEntry=document.querySelector<HTMLButtonElement>('[role="menuitem"]')!
+    const historyEntry=[...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.includes('历史诊断'))!
     assert.match(historyEntry.textContent!,/历史诊断/)
     await act(async()=>historyEntry.click())
     const history = document.querySelector('[aria-label="内部操作与恢复记录"]')!
@@ -334,7 +338,7 @@ test('interrupted clip operation history exposes retained shots for review witho
     assert.equal(view.container.querySelector('[aria-label="内部操作与恢复记录"]'),null)
     assert.equal(calls.some(call=>call.endsWith('/ai-operations')),false)
     await act(async()=>button(view.container,'任务更多选项').click())
-    const historyEntry=document.querySelector<HTMLButtonElement>('[role="menuitem"]')!
+    const historyEntry=[...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.includes('历史诊断'))!
     assert.match(historyEntry.textContent!,/历史诊断/)
     await act(async()=>historyEntry.click())
     const history = document.querySelector('[aria-label="内部操作与恢复记录"]')!
@@ -375,12 +379,12 @@ test('pagination limits rendered rows, searches the full history and resets to t
   const jobs=Array.from({length:52},(_,i)=>job(`page-${i}`,'succeeded',{result_asset_id:'result'}))
   const view=await mount({...detail,jobs})
   try {
-    assert.equal(view.container.querySelectorAll('tbody tr').length,20)
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length,20)
     await act(()=>button(view.container,'2').click())
     assert.match(view.container.querySelector('.task-records-pagination')!.textContent!,/21–40/)
     await search(view.container,'page-51')
-    assert.equal(view.container.querySelectorAll('tbody tr').length,1)
-    assert.equal(view.container.querySelector('tbody tr')!.getAttribute('data-task-id'),'page-51')
+    assert.equal(view.container.querySelectorAll('.task-records-list > [data-task-id]').length,1)
+    assert.equal(view.container.querySelector('.task-records-list > [data-task-id]')!.getAttribute('data-task-id'),'page-51')
     assert.match(view.container.querySelector('.task-records-pagination')!.textContent!,/第 1–1 条，共 1 条/)
   } finally {await view.close()}
 })
@@ -398,7 +402,7 @@ test('same-title business tasks remain separate; technical errors and their exac
   })
   const view=await mount({...detail,jobs:[]})
   try {
-    const rows=[...view.container.querySelectorAll('tbody tr')]
+    const rows=[...view.container.querySelectorAll('.task-records-list > [data-task-id]')]
     assert.equal(rows.length,2);assert.deepEqual(rows.map(row=>row.getAttribute('data-task-id')),['one','two'])
     for(const row of rows){assert.equal(row.textContent!.match(/第1集/g)?.length,1);assert.doesNotMatch(row.textContent!,/structured_output|\/Users\/|evidence_refs|任务步骤与诊断|已完成/)}
     assert.equal(view.container.textContent?.includes('152'),false)
@@ -410,4 +414,27 @@ test('same-title business tasks remain separate; technical errors and their exac
     assert.equal(calls.some(path=>path.endsWith('/task-history/two')),false)
     assert.equal(dialog.textContent?.includes('/two'),false)
   } finally {await view.close()}
+})
+
+
+test('the task overview uses real counts and selecting a row opens its inspector without running an action', async () => {
+  const recentAsset = { ...result, id: 'recent-result', created_at: new Date().toISOString() }
+  const recentDetail = { ...detail, assets: [...detail.assets, recentAsset],
+    jobs: detail.jobs.map(job => job.id === 'ready' ? { ...job, result_asset_id: recentAsset.id } : job) }
+  const view = await mount(recentDetail)
+  try {
+    const counts = taskRecordCounts(projectTaskRecords(recentDetail, models, providers))
+    const summary = [...view.container.querySelectorAll('.task-records-summary strong')].map(node => node.textContent)
+    assert.deepEqual(summary, [String(counts.active), '1', String(counts.failed + counts.interrupted)])
+    const row = view.container.querySelector('[data-task-id="ready"]')!
+    await act(() => row.querySelector<HTMLButtonElement>('.task-records-select')!.click())
+    assert.equal(row.querySelector('.task-records-select')!.getAttribute('aria-pressed'), 'true')
+    const inspector = view.container.querySelector('[aria-label="选中任务详情"]')!
+    assert.match(inspector.textContent!, /任务详情.*雨夜站台.*已完成/)
+    assert.match(inspector.textContent!, /任务 IDready/)
+    assert.deepEqual(view.events, [])
+    await search(view.container, 'queued')
+    assert.match(view.container.querySelector('[aria-label="选中任务详情"]')!.textContent!, /任务 IDqueued/)
+    assert.doesNotMatch(view.container.querySelector('[aria-label="选中任务详情"]')!.textContent!, /任务 IDready/)
+  } finally { await view.close() }
 })

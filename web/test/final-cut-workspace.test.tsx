@@ -104,10 +104,9 @@ async function mount(t: import('node:test').TestContext, data = fixture(), befor
   await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
   await click(container.querySelector<HTMLButtonElement>('.project-card-main')!)
   const openStudio = async () => {
-    await click(container.querySelector<HTMLButtonElement>('button[aria-label="切换创作页面"]')!)
-    await click(button(document.body, '成片工作台'))
-    await click(button(container, '按分镜选片'))
-    assert.ok(container.querySelector('.final-cut-scope-bar'))
+    await click(button(container.querySelector('.project-workspace-tabs')!, '成片'))
+    await click(button(container, '分镜成片'))
+    assert.ok(container.querySelector('.delivery-header [aria-label="切换成片制作方案"]'))
   }
   beforeStudio?.()
   await openStudio()
@@ -315,7 +314,7 @@ test('output controls save ratio and mix atomically in one request', async t => 
   const view = await mount(t, withSpeech())
   try {
     await click(button(view.container, '成片设置'))
-    const dialog = document.querySelector('.final-cut-output-settings')!
+    const dialog = document.querySelector('.final-cut-output-settings')!.closest('[role="dialog"]')!
     await input(dialog, '配乐音量', '35')
     await click(button(dialog, '保存成片设置'))
     assert.deepEqual(view.data.requests.filter(request => request.path.endsWith('/audio-settings')).map(request => request.body),
@@ -393,8 +392,8 @@ test('loading and failed scheme switches never retain editable content from the 
     assert.match(view.container.querySelector('.final-cut-scope-state')!.textContent!, /正在读取/)
     await act(async () => release()); await settle()
     assert.equal(view.container.querySelector('.final-cut-workspace'), null)
-    assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /此制作方案已被移除/)
-    assert.equal(view.container.querySelector('.topbar-actions button[title="导出视频"]'), null)
+    assert.match(view.container.querySelector('.final-cut-scope-state[role="alert"]')!.textContent!, /此制作方案已被移除/)
+    assert.equal(view.container.querySelector('.delivery-header button[title="导出视频"]'), null)
     data.failures.delete(pendingPath)
     await click(button(view.container, '重新加载'))
     assert.match(view.container.querySelector('.shot-list')!.textContent!, /走向列车/)
@@ -432,7 +431,7 @@ test('an empty redesign remains empty and a replaced selected shot falls back to
     data.scopes[projectId].shots.shift()
     data.scopes[projectId].timeline_clips.shift()
     await click(button(view.container, '成片设置'))
-    const settings = document.querySelector('.final-cut-output-settings')!
+    const settings = document.querySelector('.final-cut-output-settings')!.closest('[role="dialog"]')!
     await input(settings, '配乐音量', '45')
     await click(button(settings, '保存成片设置'))
     assert.match(view.container.querySelector('.final-cut-shot-summary')!.textContent!, /回望站台/)
@@ -481,9 +480,9 @@ test('recent export downloads follow the selected scheme rather than the newest 
   for (const detail of [data.detail, ...Object.values(data.scopes)]) { detail.jobs = jobs; detail.assets.push(...assets) }
   const view = await mount(t, data)
   try {
-    assert.equal(view.container.querySelector<HTMLAnchorElement>('.topbar-actions a[title="下载最近成片"]')!.getAttribute('href'), '/exports/0.mp4')
+    assert.equal(view.container.querySelector<HTMLAnchorElement>('.delivery-header a[aria-label="下载最近成片"]')!.getAttribute('href'), '/exports/0.mp4')
     await chooseScheme(view.container, projectId)
-    assert.equal(view.container.querySelector<HTMLAnchorElement>('.topbar-actions a[title="下载最近成片"]')!.getAttribute('href'), '/exports/1.mp4')
+    assert.equal(view.container.querySelector<HTMLAnchorElement>('.delivery-header a[aria-label="下载最近成片"]')!.getAttribute('href'), '/exports/1.mp4')
     assert.equal(data.requests.filter(request => request.method !== 'GET').length, 0)
   } finally { await view.destroy() }
 })

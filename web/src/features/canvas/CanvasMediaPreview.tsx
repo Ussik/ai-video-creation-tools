@@ -7,10 +7,12 @@ import CanvasImagePreview from './CanvasImagePreview'
 import CanvasVideoReviewPanel from './CanvasVideoReviewPanel'
 import CanvasVideoComparisonPanel from './CanvasVideoComparisonPanel'
 import type { VideoReviewModelOption } from './canvas-video-review'
+import type { ReasoningModel } from '../models/TaskReasoningSelect'
 import './canvas-media-preview.css'
 
-export default function CanvasMediaPreview({ asset, title, onClose, projectId, reviewModels = [], shotId, initialPanel, generationDurationMs, plannedDurationMs }: {
+export default function CanvasMediaPreview({ asset, title, onClose, projectId, reviewModels = [], reasoningModels, shotId, initialPanel, generationDurationMs, plannedDurationMs }: {
   asset: Asset; title: string; onClose: () => void; projectId?: string; reviewModels?: VideoReviewModelOption[]
+  reasoningModels?: ReasoningModel[]
   shotId?: string | null; initialPanel?: 'review' | 'comparison'; generationDurationMs?: number; plannedDurationMs?: number
 }) {
   const [panel, setPanel] = useState<'review' | 'comparison' | null>(initialPanel || null)
@@ -49,7 +51,7 @@ export default function CanvasMediaPreview({ asset, title, onClose, projectId, r
       {activeAsset.kind === 'image' ? <CanvasImagePreview key={`${activeAsset.id}:${activeAsset.url}`} src={activeAsset.url} alt={title || activeAsset.filename} /> : <CanvasNodeMedia asset={activeAsset} controls />}
     </div>
     {videoTools && panel === 'review' && <CanvasVideoReviewPanel key={activeAsset.id} projectId={projectId!} assetId={activeAsset.id} shotId={activeAsset.shot_id || shotId}
-      models={reviewModels} onSeek={seek} onClose={() => setPanel(null)} />}
+      models={reviewModels} reasoningModels={reasoningModels} onSeek={seek} onClose={() => setPanel(null)} />}
     {videoTools && panel === 'comparison' && <CanvasVideoComparisonPanel key={asset.id} projectId={projectId!} asset={asset} onClose={() => setPanel(null)}
       onReviewCandidate={candidate => { setReviewAsset(candidate); setPanel('review') }} />}
   </Modal>

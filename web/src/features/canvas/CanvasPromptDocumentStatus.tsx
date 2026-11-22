@@ -7,6 +7,7 @@ import type { CanvasPromptReference } from './CanvasPromptEditor'
 import CanvasPromptSectionDiff from './CanvasPromptSectionDiff'
 import { promptSectionDetails, promptSectionLabel } from './canvas-prompt-section-details'
 import './canvas-prompt-document-status.css'
+import './canvas-decision-dialogs.css'
 
 type Props = {
   document: PromptSectionDocument
@@ -71,9 +72,10 @@ export default function CanvasPromptDocumentStatus({ document, references, disab
       <Modal opened={opened} onClose={closeHistory} title="来源与修改记录" centered size="lg" zIndex={280} returnFocus={false}
         closeButtonProps={{ 'aria-label': '关闭来源与修改记录' }} className="pc-prompt-source-dialog"
         onKeyDown={event => { if (event.key !== 'Tab') event.stopPropagation() }}>
+        <div className="pc-decision-dialog-scroll">
         {removedNotice}
         <section className="pc-prompt-source-dialog-records" aria-label="来源记录明细">{records}</section>
-        <div className="pc-prompt-source-dialog-footer"><Button variant="default" size="xs" onClick={closeHistory}>返回正文</Button></div>
+        </div><footer className="pc-decision-dialog-actions pc-prompt-source-dialog-footer"><Button variant="default" size="xs" onClick={closeHistory}>返回正文</Button></footer>
       </Modal>
     </> : <>
       {removedNotice}

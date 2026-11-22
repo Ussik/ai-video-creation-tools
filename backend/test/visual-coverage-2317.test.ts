@@ -117,18 +117,34 @@ test('2317 saved complete coverage replays without full model calls; settled arb
   assert.equal(calls.length, after, 'duplicate explicit retry reuses its retained successful result')
 })
 
-test('coverage arbitration with an unresolved correction never supplies a retry token or repurchases on reopen', async () => {
-  let state: any = { steps: {} }, calls = 0
-  const run = () => prepareVisualCoverage({ scenes: fixture.scenes, shots: fixture.shots, profiles: fixture.profiles,
+test('unresolved coverage retains later validated shots while fencing new requests', async () => {
+  let state: any = { steps: {} }
+  const calls: string[] = []
+  const run = (selectedKeys?: readonly string[]) => prepareVisualCoverage({ scenes: fixture.scenes, shots: fixture.shots, profiles: fixture.profiles, selectedKeys,
     steps: createGenerationSteps({ checkpoint: state, save: value => { state = structuredClone(value) } }), hasHistorical: true,
-    historical: () => structuredClone(fixture.coverage_checkpoint), retries: new Map(), generate: async (_text, contract) => {
-      calls++
+    historical: () => structuredClone(fixture.coverage_checkpoint), retries: new Map(), generate: async (prompt, contract) => {
+      const shotId = JSON.parse(prompt.match(/本次镜头证据：(.*?)(?:\n仅需仲裁|$)/)![1]!).shot_id
+      calls.push(shotId)
+      if (selectedKeys) {
+        const shot = fixture.shots.find((item: { id: string }) => item.id === shotId)
+        return JSON.stringify(evidenceWireValue(shot, answer(shot)))
+      }
+      assert.equal(shotId, 'shot-1')
       if (contract?.name.endsWith('_local_repair')) throw new TypeError('isolated connection interrupted after dispatch')
       return JSON.stringify({ decisions: {} })
     } })
-  const partial = await run(), count = calls
+  await run(['@appearance:shot-4'])
+  const partial = await run()
   assert.equal(partial.profiles.length, 9)
-  assert.ok(partial.failed_units?.every(unit => unit.recovery?.action === 'inspect' && !unit.recovery.token))
-  await run()
-  assert.equal(calls, count)
+  const unknown = partial.failed_units?.find(unit => unit.unit_key === '@appearance:shot-1')
+  assert.equal(unknown?.recovery?.action, 'inspect')
+  assert.equal(unknown?.recovery?.token, undefined)
+  assert.ok(partial.failed_units?.some(unit => unit.unit_key === '@appearance:shot-2' && unit.recovery?.action === 'continue'))
+  assert.ok(!partial.failed_units?.some(unit => unit.unit_key === '@appearance:shot-4'))
+  const later = partial.profiles.find(profile => profile.draft_key === derived)?.shot_usage?.find(row => row.shot_id === 'shot-4')
+  assert.equal(later?.usage, 'video')
+  assert.deepEqual(calls, ['shot-4', 'shot-1', 'shot-1'])
+  const reopened = await run()
+  assert.deepEqual(reopened.profiles, partial.profiles)
+  assert.deepEqual(calls, ['shot-4', 'shot-1', 'shot-1'])
 })

@@ -1,0 +1,11 @@
+.sd-source-recovery-modal .mantine-Modal-content { display:flex; flex-direction:column; max-height:calc(100dvh - var(--modal-y-offset,20px) * 2); overflow:hidden; }
+.sd-source-recovery-modal .mantine-Modal-header { flex:none; }
+.sd-source-recovery-modal .mantine-Modal-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0; overflow:hidden; }
+.sd-source-recovery-scroll { flex:1; min-height:0; padding:22px 24px 26px; overflow:auto; overscroll-behavior:contain; }
+.sd-source-recovery-modal .sd-source-dialog-actions { flex:none; margin:0; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+@media (max-width:600px) {
+ .sd-source-recovery-scroll { padding:18px; }
+ .sd-source-recovery-modal .sd-source-dialog-actions { padding:14px 18px; }
+ .sd-source-recovery-modal .sd-source-dialog-actions .mantine-Button-root { min-width:0; flex:1 1 auto; height:auto; min-height:36px; padding-block:8px; }
+ .sd-source-recovery-modal .sd-source-dialog-actions .mantine-Button-label { white-space:normal; line-height:1.5; }
+}

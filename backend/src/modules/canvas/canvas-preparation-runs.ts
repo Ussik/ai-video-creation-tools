@@ -6,21 +6,27 @@ import { all, db, one } from '../../infrastructure/database/db.js'
 import { createScriptRequestUsage, scriptRequestUsageTokens, withTextRequestUsage, type ScriptRequestUsage } from '../../infrastructure/providers/text-request-usage.js'
 import { generationUnitStore } from '../generation/generation-unit-store.js'
 import { modelWorkflowBudgetKey } from '../generation/model-workflow-budget.js'
-import { creativeInputHash } from '../skills/creative-model-state.js'
+import { creativeInputHash, creativeModelIdentity } from '../skills/creative-model-state.js'
+import { bindTaskReasoningById } from '../../infrastructure/providers/task-reasoning.js'
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { canvasExecution, canvasExternalExecutor, type CanvasExecution } from './canvas-preparation-execution.js'
 import { coverageRecoveryState, coverageRecoveryToken, coverageRecoveryPolicy } from '../visuals/visual-coverage-recovery.js'
+import { coverageUnitKey } from '../visuals/visual-coverage-workflow.js'
 import { latestVisualRetry } from '../visuals/visual-profile-retry.js'
 import { TextProviderError } from '../../infrastructure/providers/text-errors.js'
 
 /** Independent ceilings: changing run ids never replenishes the task ledger. */
 export const canvasPreparationLimits = { max_runs: 3, max_source_updates: 3, run_requests: 256, task_requests: 512, run_tokens: 24_000_000, task_tokens: 48_000_000 } as const
 type State = CanvasPreparationRecovery['state']
-type Run = { id: string; signature: string; model_id?: string; full_scope: boolean; state: State; owner?: string; execution?: CanvasExecution; plan?: ScriptCanvasPlan; usage: ScriptRequestUsage; abandoned_at?: string; discarded_at?: string; source_update_from_run_id?: string; terminal_transport?: boolean }
+type Run = { id: string; signature: string; model_id?: string; model_signature?: string; text_generation_options?: TextGenerationOptions; full_scope: boolean; state: State; owner?: string; execution?: CanvasExecution; plan?: ScriptCanvasPlan; usage: ScriptRequestUsage; abandoned_at?: string; discarded_at?: string; source_update_from_run_id?: string; terminal_transport?: boolean }
 type Receipt = { fingerprint: string; run_id: string; plan?: ScriptCanvasPlan; error?: { code: string; message: string; statusCode: number; resumable?: boolean } }
 type Manifest = { version: 1; active: string; runs: Run[]; usage: ScriptRequestUsage; receipts: Record<string, Receipt> }
 export type CanvasPreparationAction = { model_id?: string; run_id?: string; request_id?: string; restart_from_run_id?: string; prepare_current_from_run_id?: string; abandon_unknown?: true;
+  text_generation_options?: TextGenerationOptions;
   unit_keys?: string[]; retry_unit?: { unit_key: string; token: string }; retry_units?: Array<{ unit_key: string; token: string }>; skip_unit_keys?: string[] }
-type Scope = { projectId: string; sceneIds: string[]; designId?: string | null; signature: string; namespaces: string[]; shotIds?: string[]; prepared?: boolean; scopeProfiles?: (profiles: ScriptCanvasPlan['profiles']) => ScriptCanvasPlan['profiles']; coverageContext?: (unit: NonNullable<ScriptCanvasPlan['failed_units']>[number], profiles: ScriptCanvasPlan['profiles'], checkpoint: { steps: Record<string, { value: any }> }) => { stepId: string; context_hash: string; locallyValid?: (raw: string) => boolean } | undefined }
+type FailedUnit = NonNullable<ScriptCanvasPlan['failed_units']>[number]
+type CoverageCheckpoint = { steps: Record<string, { input_hash: string; value: any }> }
+type Scope = { projectId: string; sceneIds: string[]; designId?: string | null; signature: string; namespaces: string[]; shotIds?: string[]; prepared?: boolean; scopeProfiles?: (profiles: ScriptCanvasPlan['profiles']) => ScriptCanvasPlan['profiles']; coverageContext?: (unit: FailedUnit, profiles: ScriptCanvasPlan['profiles'], checkpoint: CoverageCheckpoint, stepId: string) => { stepId: string; context_hash: string; locallyValid?: (raw: string) => boolean; replay?: FailedUnit['recovery'] } | undefined }
 const active = new Map<string, { id: string; runId: string; fingerprint: string; promise: Promise<ScriptCanvasPlan>; controller: AbortController }>()
 const failure = (code: string, message: string, statusCode = 409) => Object.assign(new Error(message), { code, statusCode, retryable: false })
 const strip = (plan: ScriptCanvasPlan): ScriptCanvasPlan => { const { preparation: _recovery, ...value } = plan; return structuredClone(value) }
@@ -38,7 +44,7 @@ export function canvasPreparationRuns(scope: Scope) {
       'SELECT namespace,payload FROM model_unit_checkpoints WHERE project_id=? AND (' + scope.namespaces.map(() => '(namespace=? OR substr(namespace,1,?)=?)').join(' OR ') + ')',
       scope.projectId, ...scope.namespaces.flatMap(base => [base, (base + ':run:').length, base + ':run:']))
   const checkpoints = (runId?: string) => rows().filter(row => runId === undefined || scope.namespaces.some(base => row.namespace === (runId === 'legacy' ? base : base + ':run:' + runId))).map(row => {
-    try { return JSON.parse(row.payload) as { steps: Record<string, { input_hash?: string; value: any }> } }
+    try { return JSON.parse(row.payload) as CoverageCheckpoint }
     catch { throw failure('canvas_preparation_history_invalid', '保留的参考准备记录无法读取，请核对记录；未开始新请求。') }
   })
   const terminalTransport = (run?: Run) => {
@@ -114,11 +120,13 @@ export function canvasPreparationRuns(scope: Scope) {
         const stepId = 'unit:' + failureKey.slice('visual-unit-failure:'.length)
         if (unit.stage === 'coverage') {
           const next = coverageRecoveryState(checkpoint, stepId)
-          const context = scope.coverageContext?.(unit, run.plan.profiles, checkpoint)
+          const context = run.signature === scope.signature ? scope.coverageContext?.(unit, run.plan.profiles, checkpoint, stepId) : undefined
           unit.model_request_count = next.model_request_count; unit.local_validation_count = next.local_validation_count
           unit.recovery_version = coverageRecoveryPolicy; unit.attempt = next.model_request_count; unit.is_new_model_call = false
           unit.recovery = { ...next.recovery }
-          if (terminalTransport(run) && context?.stepId === stepId) {
+          if (unit.unit_key === coverageUnitKey) {
+            if (!next.blocked) unit.recovery = context?.replay || { action: 'inspect', model_call: 'none', reason: '保留的覆盖回答无法匹配当前范围。请核对分镜和档案版本。' }
+          } else if (terminalTransport(run) && context?.stepId === stepId) {
             const attempt = Object.entries(checkpoint.steps).map(([, entry]) => entry.value).find((value: any) => value?.policy === coverageRecoveryPolicy && value?.id?.startsWith('coverage-v2:' + stepId + ':')) as any
             if (attempt?.parent_hash && attempt.context_hash) unit.recovery = { action: 'retry', model_call: 'required', token: coverageRecoveryToken(stepId, attempt.parent_hash, attempt.context_hash), reason: '模型连接已明确结束，已有结果保留；可继续本镜用途检查。' }
           } else if (!next.blocked && context?.stepId === stepId && next.source && context.locallyValid?.(next.source.response.raw)) {
@@ -236,10 +244,11 @@ export function canvasPreparationRuns(scope: Scope) {
     const steps = task ? JSON.parse(task.progress || '[]') : []
     const progress = steps.at(-1)
     return { run_id: run.id, state: unknown ? 'unknown' : running ? 'running' : prepared ? 'complete' : run.state, model_id: run.model_id, full_scope: run.full_scope && !prepared,
+      ...(run.text_generation_options?.reasoning ? { text_generation_options: run.text_generation_options } : {}),
       can_retry_failed: !reason && retryable.length > 0, retryable_unit_keys: retryable,
       retry_reason: reason || (retryable.length ? '仅为失败对象创建一次新尝试，已成功对象和技能选择复用。' : '本轮没有可直接重试的失败项；可查看详情或全部重新开始。'),
       can_continue: !reason && (resumable || prepared || pendingKeys.length > 0 || run.state === 'cancelled' || run.state === 'complete'), pending_unit_keys: pendingKeys,
-      continue_reason: reason || coverageReason || (resumable || terminal ? '模型连接中断，已有结果已保留，可重试继续。' : pendingKeys.length || run.state === 'cancelled' ? '继续未完成对象并复用现有记录。' : run.state === 'complete' ? '现有结果已完整验证，可直接采用，不重新调用模型。' : '本运行没有可直接继续的对象；请查看原回答或明确全部重新开始视觉参考准备。'),
+      continue_reason: reason || coverageReason || coverageFailures.find(unit => unit.recovery?.action === 'continue' && unit.unit_key === coverageUnitKey)?.recovery?.reason || (resumable || terminal ? '模型连接中断，已有结果已保留，可重试继续。' : pendingKeys.length || run.state === 'cancelled' ? '继续未完成对象并复用现有记录。' : run.state === 'complete' ? '现有结果已完整验证，可直接采用，不重新调用模型。' : '本运行没有可直接继续的对象；请查看原回答或明确全部重新开始视觉参考准备。'),
       can_restart_all: !common && !taskLimited && manifest.runs.length < canvasPreparationLimits.max_runs,
       restart_reason: common || (taskLimited ? '本次所选场次的参考准备累计预算已用尽；新运行不会重置该预算。' : manifest.runs.length >= canvasPreparationLimits.max_runs ? '全量重做版本已达上限；分镜已更新时可按当前范围单独整理，旧成果继续保留。'
         : '仅重新整理本次所选场次的人物、场景与道具参考。会产生新的模型用量，旧成果保留，新结果需确认采用。'),
@@ -304,7 +313,7 @@ export function canvasPreparationRuns(scope: Scope) {
       }
       return run.full_scope
     },
-    async execute(input: CanvasPreparationAction, signal: AbortSignal, work: (run: { id: string; full_scope: boolean; signal: AbortSignal; terminal_transport?: boolean }) => Promise<ScriptCanvasPlan>): Promise<ScriptCanvasPlan> {
+    async execute(input: CanvasPreparationAction, signal: AbortSignal, work: (run: { id: string; full_scope: boolean; signal: AbortSignal; terminal_transport?: boolean; text_generation_options?: TextGenerationOptions }) => Promise<ScriptCanvasPlan>): Promise<ScriptCanvasPlan> {
       const fingerprint = creativeInputHash(input), id = input.request_id || 'legacy-' + fingerprint
       const existing = active.get(key)
       if (existing) {
@@ -350,6 +359,10 @@ export function canvasPreparationRuns(scope: Scope) {
         if (input.run_id && input.run_id !== run.id) throw failure('canvas_preparation_run_changed', '当前运行已经变化，请刷新参考准备状态。')
         if (run.signature !== scope.signature || (input.request_id || input.run_id) && run.model_id && input.model_id && run.model_id !== input.model_id) throw failure('canvas_preparation_source_changed', '资料或模型已变化，请明确全部重新开始参考准备。')
         if (run.state === 'failed' && !run.plan && !caps.can_continue) throw failure('canvas_preparation_continue_blocked', caps.continue_reason)
+        const fullCoverage = run.plan?.failed_units?.find(unit => unit.unit_key === coverageUnitKey && unit.recovery?.action === 'inspect')
+        if (input.unit_keys?.includes(coverageUnitKey) && fullCoverage) {
+          throw failure('canvas_preparation_continue_blocked', fullCoverage.recovery?.reason || caps.continue_reason)
+        }
         if (input.request_id && run.plan && !input.unit_keys && !input.retry_unit && !input.retry_units && !input.skip_unit_keys) return decorate(run.plan, manifest, input.model_id)
       }
       if (manifest.usage.requests >= canvasPreparationLimits.task_requests || run.usage.requests >= canvasPreparationLimits.run_requests) throw failure('canvas_preparation_budget_exceeded', '参考准备预算已用尽；不会通过重新开始清空历史用量。', 422)
@@ -359,6 +372,13 @@ export function canvasPreparationRuns(scope: Scope) {
         if (!unit || unit.recovery?.action !== 'retry' || unit.recovery.token !== retry.token) throw failure('canvas_preparation_retry_unavailable', '指定对象当前不可重试，请刷新状态或全部重新开始。')
       }
       run.model_id = input.model_id || run.model_id
+      if (run.model_id) {
+        const modelSignature = creativeModelIdentity(run.model_id)
+        if (!run.model_signature && run.state === 'idle' && !run.owner) run.text_generation_options = input.text_generation_options
+        if (run.model_signature && run.model_signature !== modelSignature) throw failure('canvas_preparation_source_changed', '文本模型配置已变化，请重新开始参考准备。')
+        run.model_signature = modelSignature
+      }
+      const withReasoning = run.model_id ? bindTaskReasoningById(run.model_id, run.text_generation_options) : <Result>(execute: () => Result) => execute()
       // Claim synchronously before the first await; persistent running state is
       // deliberately unknown after a process restart until its request is checked.
       store() // Initialize the lazily created checkpoint table only on execution.
@@ -389,7 +409,7 @@ export function canvasPreparationRuns(scope: Scope) {
           const value = await withTextRequestUsage({ usage: manifest.usage, limits: { max_requests: canvasPreparationLimits.task_requests, max_total_requests: canvasPreparationLimits.task_requests * 4, max_tokens: canvasPreparationLimits.task_tokens },
             budgetLabel: '本次所选场次参考准备累计任务', signal: workSignal, onUpdate: persistUsage }, () =>
             withTextRequestUsage({ usage: run.usage, limits: { max_requests: canvasPreparationLimits.run_requests, max_total_requests: canvasPreparationLimits.run_requests * 4, max_tokens: canvasPreparationLimits.run_tokens },
-              budgetLabel: '本运行参考准备', signal: workSignal, onUpdate: persistUsage }, () => work({ id: run.id, full_scope: run.full_scope, signal: workSignal, terminal_transport: run.terminal_transport })))
+              budgetLabel: '本运行参考准备', signal: workSignal, onUpdate: persistUsage }, () => withReasoning(() => work({ id: run.id, full_scope: run.full_scope, signal: workSignal, terminal_transport: run.terminal_transport, text_generation_options: run.text_generation_options }))))
           workSignal.throwIfAborted()
           run.plan = strip(value); run.state = value.status === 'partial' || value.failed_units?.length ? 'partial' : 'complete'
           manifest.receipts[id] = { fingerprint, run_id: run.id, plan: strip(value) }; save(manifest)

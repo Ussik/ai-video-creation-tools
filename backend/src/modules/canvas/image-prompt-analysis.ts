@@ -1,3 +1,4 @@
+import { bindTaskReasoningById, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { open, realpath } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 import type { FastifyInstance } from 'fastify'
@@ -14,6 +15,7 @@ import { currentModelRequestContext, modelTaskPolicies, withModelRequestContext 
 import { analyzeGeminiImage } from '../../infrastructure/providers/gemini-image-analysis.js'
 
 const inputSchema = z.object({
+  text_generation_options: textGenerationOptionsInput,
   model_id: z.string().trim().min(1).max(100), asset_id: z.string().trim().min(1).max(100),
   instructions: z.string().trim().max(4000).default(''),
 }).strict()
@@ -86,6 +88,7 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
       if (issue) fail(issue)
     }
     if (!supportsImagePromptAnalysis({ ...model, settings })) fail('当前模型未启用图片理解，请配置支持看图的文本模型，或启用图片模型的 Gemini 图片反推接口')
+    const withReasoning = bindTaskReasoningById(model.id, input.text_generation_options)
     const controller = new AbortController()
     const abort = () => { if (!reply.raw.writableEnded) controller.abort(new DOMException('图片反推已取消', 'AbortError')) }
     request.raw.once('aborted', abort)
@@ -95,7 +98,7 @@ export function registerImagePromptAnalysisRoutes(app: FastifyInstance, dependen
       const analyze = model.modality === 'image' ? generateGemini : generate
       const output = await withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.prompt, signal: controller.signal },
         () => withModelOperationStage('image_understanding', () => runModelStep('image_prompt_analysis', controller.signal, () => retryReadOnlyRequest(
-          () => analyze(model, provider, { prompt: imagePromptAnalysisInstructions(input.instructions), images: [{ data_url, detail: 'high' }] }, modelStepSignal(controller.signal)!),
+          () => withReasoning(() => analyze(model, provider, { prompt: imagePromptAnalysisInstructions(input.instructions), images: [{ data_url, detail: 'high' }] }, modelStepSignal(controller.signal)!)),
           { signal: controller.signal }))))
       controller.signal.throwIfAborted()
       const prompt = output.trim().replace(/^```(?:text|markdown)?\s*\n([\s\S]*?)\n```$/i, '$1').trim()

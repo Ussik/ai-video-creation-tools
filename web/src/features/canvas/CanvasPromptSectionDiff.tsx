@@ -3,6 +3,7 @@ import type { PromptSectionBlock } from '@video-studio/shared/visuals/prompt-sec
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { promptSectionDetails, promptSectionLineDiff, readablePromptSection } from './canvas-prompt-section-details'
 import './canvas-prompt-document-status.css'
+import './canvas-decision-dialogs.css'
 
 type Props = {
   block?: PromptSectionBlock
@@ -31,18 +32,20 @@ export default function CanvasPromptSectionDiff({ block, displayName, references
   const details = block ? promptSectionDetails(block, references) : undefined
   const baseline = readablePromptSection(block?.sourceText ?? '', references)
   const current = readablePromptSection(block?.deleted ? '' : block?.text ?? '', references)
-  return <Modal opened={!!block} onClose={onClose} title={`${displayName || block?.name || ''} · 内容对比`} centered size="lg" zIndex={285}>
-    {block && details && <Stack gap="sm">
+  return <Modal opened={!!block} onClose={onClose} title={`${displayName || block?.name || ''} · 内容对比`} centered size="lg" zIndex={285} className="pc-source-diff-modal">
+    {block && details && <>
+      <div className="pc-decision-dialog-scroll"><Stack gap="sm">
       <Text size="xs" c="dimmed">{details.category} · 来源：{details.source} · {details.state}</Text>
       <Text size="xs" c="dimmed">− 表示删除，+ 表示新增。两组变化均与上次接受的来源内容比较。</Text>
       <WorkspaceDisclosure className="pc-prompt-diff-baseline" label="上次接受的来源内容"><pre>{baseline || '（无来源内容）'}</pre></WorkspaceDisclosure>
       <Changes label="本节点内容变化" before={baseline} after={current} />
       {block.pendingSourceText !== undefined && <Changes label="来源更新" before={baseline} after={readablePromptSection(block.pendingSourceText, references)} />}
       {details.parameters && <Text size="xs" c="dimmed">比例、清晰度等以底部生成参数为准；这里的文字仍会检查参数冲突。</Text>}
-      {details.pending && onResolve && <div className="pc-prompt-source-actions">
+      </Stack></div>
+      {details.pending && onResolve && <footer className="pc-decision-dialog-actions pc-prompt-source-actions">
         <Button variant="default" disabled={disabled} onClick={() => { onResolve(block.id, 'keep_custom'); onClose() }}>保留本节点修改</Button>
         <Button disabled={disabled} onClick={() => { onResolve(block.id, 'follow_source'); onClose() }}>使用来源更新</Button>
-      </div>}
-    </Stack>}
+      </footer>}
+    </>}
   </Modal>
 }

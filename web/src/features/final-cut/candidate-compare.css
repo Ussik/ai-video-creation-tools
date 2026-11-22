@@ -1,5 +1,8 @@
 .candidate-compare-modal .mantine-Modal-content {
-  max-height: min(90vh, 980px);
+  display:flex;
+  flex-direction:column;
+  max-height:min(90dvh,980px);
+  overflow:hidden;
   border: 1px solid var(--fc-border);
   background: var(--fc-panel);
   color: var(--fc-text);
@@ -12,11 +15,16 @@
 
 .candidate-compare-modal .mantine-Modal-title {
   font-size: 16px;
-  font-weight: 700;
+  font-weight:500;
 }
 
 .candidate-compare-modal .mantine-Modal-body {
-  padding: 17px 20px 21px;
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
+  padding:0;
+  overflow:hidden;
 }
 
 .candidate-compare-intro {
@@ -102,8 +110,8 @@
   justify-content: center;
   gap: 8px;
   padding: 16px;
-  background: #241b1aee;
-  color: #f0a59e;
+  background:var(--fc-panel);
+  color:var(--fc-danger);
   font-size: 12px;
   text-align: center;
 }
@@ -119,7 +127,7 @@
   white-space: nowrap;
 }
 
-.candidate-compare-hint { color: #e6bb8c; font-size: 11px; line-height: 1.4; }
+.candidate-compare-hint { color:var(--fc-warning); font-size: 11px; line-height: 1.4; }
 
 .candidate-compare-frames {
   display: grid;
@@ -195,15 +203,26 @@
   align-items: center;
   gap: 8px;
   margin-top: 10px;
-  color: #f0a59e;
+  color:var(--fc-danger);
   font-size: 11px;
 }
 
 @media (max-width: 700px) {
-  .candidate-compare-modal .mantine-Modal-body { padding: 13px; }
+  .candidate-compare-scroll { padding:18px; }
   .candidate-compare-grid { grid-template-columns: 1fr; }
   .candidate-compare-side { padding: 10px; }
   .candidate-compare-empty-side { min-height: 110px; }
   .candidate-compare-transport { flex-wrap: wrap; }
   .candidate-compare-transport input[type='range'] { order: 2; flex-basis: 100%; }
+}
+
+.candidate-compare-modal .mantine-Modal-header { flex:none; }
+.candidate-compare-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:22px 24px 26px; }
+.candidate-compare-footer { flex:none; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+.candidate-compare-footer .candidate-compare-transport { margin:0; padding:0; border:0; background:transparent; }
+.candidate-compare-transport .mantine-Slider-root { min-width:70px; flex:1; }
+.candidate-compare-footer .candidate-compare-transport-note { margin:8px 0 0; line-height:1.6; }
+@media (max-width:700px) {
+ .candidate-compare-footer { padding:14px 18px; }
+ .candidate-compare-transport .mantine-Slider-root { order:2; flex-basis:100%; }
 }

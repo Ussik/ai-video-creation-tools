@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef, useState } from 'react'
-import { ActionIcon, Button, Modal, MultiSelect, SegmentedControl, Select, Switch, TextInput } from '@mantine/core'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
+import { ActionIcon, Button, Modal, MultiSelect, SegmentedControl, Select, Switch, TextInput, UnstyledButton } from '@mantine/core'
 import { ArrowUpRight, BookOpen, Check, Download, GitBranch, LoaderCircle, Plus, Puzzle, RefreshCcw, Search, Settings2, Trash2, X } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -12,9 +12,22 @@ import { notifySkillsLibraryChanged } from './skills-library-events'
 
 const errorMessage = (issue: unknown) => issue instanceof Error ? issue.message : String(issue)
 const sourceKey = (skill: { repo: string; path: string }) => `${skill.repo}:${skill.path}`
+const skillCategories = [
+  { value: 'all', label: '全部技能' }, { value: 'script', label: '剧本创作' },
+  { value: 'visual', label: '画面生成' }, { value: 'video', label: '视频与成片' },
+] as const
+function belongsToCategory(skill: DiscoverableSkill | InstalledSkill, category: string) {
+  if (category === 'all') return true
+  const stages = 'stages' in skill ? [...skill.stages, ...skill.suggested_stages] : []
+  const text = `${skill.name} ${skill.path} ${skill.description}`.toLowerCase()
+  if (category === 'script') return stages.includes('script') || /(?:script|write|dialogue|剧本|对白)/.test(text)
+  if (category === 'visual') return stages.some(stage => stage === 'visual_assets' || stage === 'image_prompt') || /(?:image|asset|visual|图片|视觉|画面|美术)/.test(text)
+  return stages.some(stage => stage === 'storyboard' || stage === 'video_prompt') || /(?:video|storyboard|cut|分镜|视频|成片|剪辑)/.test(text)
+}
 
-function SkillsCenter({ projectId, projectName }: { projectId?: string; projectName?: string } = {}) {
-  const [tab, setTab] = useState('discover'), [source, setSource] = useState('catalog')
+function SkillsCenter({ projectId, projectName, headerControls }: { projectId?: string; projectName?: string; headerControls?: ReactNode } = {}) {
+  const [tab, setTab] = useState(headerControls ? 'installed' : 'discover'), [source, setSource] = useState('catalog')
+  const [category, setCategory] = useState('all')
   const [query, setQuery] = useState(''), [results, setResults] = useState<DiscoverableSkill[]>(recommendedSkills)
   const [installed, setInstalled] = useState<InstalledSkill[]>([]), [repositories, setRepositories] = useState<Array<{ repo: string }>>([])
   const [repo, setRepo] = useState('zenstory-ai/drama-skills'), [repoInput, setRepoInput] = useState('')
@@ -37,7 +50,7 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
   useEffect(() => { void reload().catch(issue => setError(errorMessage(issue))).finally(() => setLoading(false)) }, [])
   useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(''), 3000); return () => window.clearTimeout(timer) }, [notice])
   useEffect(() => () => { requestSerial.current++ }, [])
-  useEffect(() => { if (documentRef.current) documentRef.current.scrollTop = 0 }, [file, documentMode])
+  useEffect(() => { const viewport = documentRef.current?.closest('.skills-modal-scroll'); if (viewport) viewport.scrollTop = 0 }, [file, documentMode])
 
   async function action(key: string, work: () => Promise<void>) {
     if (busyRef.current) return
@@ -111,16 +124,32 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
       try { await refreshLibrary() } catch (issue) { setError(`同步结果已保存，但列表刷新失败：${errorMessage(issue)}`) }
     })
   }
-  const installedFilter = installed.filter(skill => `${skill.name} ${skill.description} ${skill.repo}`.toLowerCase().includes(query.trim().toLowerCase()))
+  const installedFilter = installed.filter(skill => belongsToCategory(skill, category)).filter(skill => `${skill.name} ${skill.description} ${skill.repo}`.toLowerCase().includes(query.trim().toLowerCase()))
+  const featuredSkill = headerControls && !query.trim() && category === 'all' ? installed.find(skill => skill.enabled) : undefined
+  const filteredResults = results.filter(skill => belongsToCategory(installed.find(item => skillMatches(item, skill)) || skill, category))
+  const categorySkills = tab === 'installed' ? installed : results
   const content = detail?.files.find(item => item.path === file)?.content || ''
   const body = file.endsWith('SKILL.md') ? content.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/, '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '') : content
   return <section className="skills-page" aria-label="技能中心">
-    <header className="skills-header"><div><span className="skills-eyebrow">创作工具</span><h1>技能中心</h1><p>发现创作技能，应用到剧本、视觉设定与分镜流程。</p></div>
-      <Button variant="default" leftSection={<GitBranch size={15} />} onClick={() => setRepositoryOpen(true)}>仓库管理</Button></header>
+    <header className="skills-header">
+      <h1>技能中心</h1>
+      <div className="skills-header-actions">
+        {headerControls}
+        <Button variant="default" leftSection={<Search size={15} />} onClick={() => setTab('discover')}>发现技能</Button>
+        <Button variant="default" onClick={() => setTab('defaults')}>默认技能</Button>
+        <Button leftSection={<RefreshCcw size={15} />} loading={busy === 'sync'} disabled={loading || !!busy || !installed.length} title="更新全部已安装技能和参考资料，包括未启用及搜索未显示的技能，并同步到创作环节" onClick={() => void syncSkills()}>{headerControls ? '更新并同步' : '一键更新并同步'}</Button>
+      </div>
+    </header>
+    <div className="skills-workbench-layout">
+      <aside className="skills-category-nav" aria-label="技能分类">
+        <h2>技能库</h2>
+        <nav>{skillCategories.map(item=><UnstyledButton key={item.value} className={category===item.value?'is-active':''} aria-current={category===item.value?'true':undefined} onClick={()=>{setCategory(item.value);if(tab==='defaults')setTab('discover')}}><span>{item.label}</span><small>{categorySkills.filter(skill=>belongsToCategory(skill,item.value)).length}</small></UnstyledButton>)}</nav>
+        <div className="skills-category-defaults"><Button variant="subtle" leftSection={<GitBranch size={14}/>} onClick={() => setRepositoryOpen(true)}>仓库管理</Button></div>
+      </aside>
+      <div className="skills-workbench-main">
     <div className="skills-navigation"><SegmentedControl value={tab} onChange={value => { setTab(value); setQuery(''); setError('') }} data={[
       { value: 'discover', label: '发现技能' }, { value: 'installed', label: `已安装 · ${installed.length}` }, { value: 'defaults', label: '默认技能' },
-    ]} />{tab === 'installed' && <div className="skills-library-actions"><Button variant="subtle" leftSection={<RefreshCcw size={15} />} disabled={loading || !!busy || !installed.length} onClick={() => void checkUpdates()}>检查更新</Button>
-      <Button leftSection={<RefreshCcw size={15} />} loading={busy === 'sync'} disabled={loading || !!busy || !installed.length} title="更新全部已安装技能和参考资料，包括未启用及搜索未显示的技能，并同步到创作环节" onClick={() => void syncSkills()}>一键更新并同步</Button></div>}</div>
+    ]} />{tab === 'installed' && <Button variant="subtle" leftSection={<RefreshCcw size={15} />} disabled={loading || !!busy || !installed.length} onClick={() => void checkUpdates()}>检查更新</Button>}</div>
     {tab !== 'defaults' && <form className="skills-search" onSubmit={event => { event.preventDefault(); if (tab === 'discover') void search() }}>
       {tab === 'discover' && <SegmentedControl aria-label="搜索来源" value={source} onChange={changeSource} data={[{ value: 'catalog', label: 'skills.sh' }, { value: 'repository', label: 'GitHub 仓库' }]} />}
       {tab === 'discover' && source === 'repository' ? <TextInput aria-label="GitHub 仓库" placeholder="owner/repo 或 GitHub 仓库地址" value={repo} onChange={event => setRepo(event.currentTarget.value)} leftSection={<GitBranch size={16} />} />
@@ -139,8 +168,8 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
     </section>}
     {(searching || busy || loading) && <div className="skills-progress" role="status"><LoaderCircle size={15} className="pc-spin" />{searching ? '正在搜索技能' : loading ? '正在读取技能库' : busy === 'sync' ? `正在检查并同步全部 ${installed.length} 个已安装技能，请稍候…` : busy.startsWith('install:') ? '正在下载技能与参考资料' : busy.startsWith('detail:') ? '正在读取技能详情' : busy === 'updates' ? '正在检查来源仓库版本' : '正在处理'}</div>}
     {tab === 'defaults' ? <SkillDefaultSettings projectId={projectId} projectName={projectName} /> : tab === 'discover' ? <>
-      <div className="skills-results-heading"><h2>{hasSearched ? '搜索结果' : '适合当前项目'}</h2><span>{hasSearched ? `${results.length} 项${total > results.length ? ` / ${total}` : ''}` : '从视觉设定到分镜视频'}</span></div>
-      <div className="skills-grid">{results.map(skill => {
+      <div className="skills-results-heading"><h2>{hasSearched ? '搜索结果' : '推荐技能'}</h2>{hasSearched && <span>{results.length} 项{total > results.length ? ` / ${total}` : ''}</span>}</div>
+      <div className="skills-grid">{filteredResults.map(skill => {
         const local = installed.find(item => skillMatches(item, skill))
         return <article className="skill-card" key={sourceKey(skill)}><div className="skill-card-heading"><Puzzle size={19} /><h3>{skill.name}</h3></div>
           <div className="skill-card-meta"><span>{skill.repo}</span>{skill.installs !== null && <span><Download size={12} />{skill.installs.toLocaleString()} 次安装</span>}</div>
@@ -149,9 +178,14 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
             <Button size="xs" variant={local ? 'default' : 'filled'} leftSection={local ? <Settings2 size={14} /> : <Download size={14} />} disabled={!!busy}
               onClick={() => void (local ? showDetail(local) : install(skill))}>{local ? '应用配置' : '安装'}</Button></div></article>
       })}</div>
-      {hasSearched && !results.length && !searching && <div className="skills-empty"><Search size={28} /><h3>未找到技能</h3><p>尝试英文关键词，或切换到 GitHub 仓库搜索。</p></div>}
+      {!filteredResults.length && !searching && <div className="skills-empty"><Search size={28} /><h3>未找到技能</h3><p>{category !== 'all' ? '此分类下还没有匹配项，可查看全部技能。' : '尝试英文关键词，或切换到 GitHub 仓库搜索。'}</p></div>}
       {source === 'catalog' && hasSearched && results.length < total && <div className="skills-load-more"><Button variant="default" disabled={searching} onClick={() => void search(offset + 24)}>加载更多</Button></div>}
-    </> : <div className="skills-installed">{installedFilter.map(skill => <article key={skill.id} className="skill-installed-row">
+    </> : <div className="skills-installed">
+      {featuredSkill && <article className="skills-featured">
+        <div><small>已启用技能</small><h2>{featuredSkill.name}</h2>{featuredSkill.description && <p>{featuredSkill.description}</p>}</div>
+        <Button variant="default" leftSection={<Settings2 size={15} />} disabled={!!busy} onClick={() => void showDetail(featuredSkill)}>配置</Button>
+      </article>}
+      {installedFilter.map(skill => <article key={skill.id} className="skill-installed-row">
       <div className="skill-installed-icon"><Puzzle size={20} /></div><div className="skill-installed-summary"><h3>{skill.name}<span className={skill.enabled ? 'is-enabled' : ''}>{skill.enabled ? '已启用' : '未启用'}</span></h3><p>{skill.description}</p>
         <div className="skill-card-meta"><span>{skill.repo}</span><span>版本 {skill.revision.slice(0, 8)}</span><span>{skill.stages.length ? skill.stages.map(value => skillStageOptions.find(item => item.value === value)?.label).join(' · ') : '尚未绑定创作环节'}</span></div></div>
       <div className="skill-installed-actions">{updates[skill.id] && <Button size="xs" variant="default" disabled={!!busy} onClick={() => void action(`update:${skill.id}`, async () => {
@@ -162,12 +196,13 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
         })}><Trash2 size={15} /></ActionIcon></div>
     </article>)}{!loading && !installedFilter.length && <div className="skills-empty"><Puzzle size={28} /><h3>{installed.length ? '未找到匹配的技能' : '还没有安装技能'}</h3><p>在发现技能中查看并安装，再选择适用创作环节。</p><Button variant="default" onClick={() => setTab('discover')}>发现技能</Button></div>}</div>}
 
-    <Modal opened={!!detail} onClose={() => { if (!busy) setDetail(null) }} centered size="min(1000px, calc(100vw - 40px))" radius={24} title={detail?.name} className="skills-modal" overlayProps={{ backgroundOpacity: 0.65, blur: 3 }}>
-      {detail && <><div className="skills-detail-meta"><a href={detail.url} target="_blank" rel="noreferrer">{detail.repo}<ArrowUpRight size={14} /></a><span>版本 {detail.revision.slice(0, 8)}</span>{detail.license && <span>{detail.license}</span>}</div><p className="skills-detail-description">{detail.description}</p>
+      </div>
+    </div>
+    <Modal opened={!!detail} onClose={() => { if (!busy) setDetail(null) }} centered size="min(1000px, calc(100vw - 40px))" radius={14} title={detail?.name} className="skills-modal">
+      {detail && <><div className="skills-modal-scroll"><div className="skills-detail-meta"><a href={detail.url} target="_blank" rel="noreferrer">{detail.repo}<ArrowUpRight size={14} /></a><span>版本 {detail.revision.slice(0, 8)}</span>{detail.license && <span>{detail.license}</span>}</div><p className="skills-detail-description">{detail.description}</p>
         <div className="skills-binding"><div className="skills-binding-heading"><h3>应用配置</h3><span>{detail.id ? '已安装到本应用' : '尚未安装'}</span></div>
           <MultiSelect label="适用创作环节" aria-label="适用创作环节" data={skillStageOptions} value={stages} onChange={value => setStages(value as SkillStage[])} disabled={!detail.id || !!busy} placeholder="选择技能参与的创作环节" />
-          <div className="skills-binding-footer"><Switch label="允许用于创作" checked={enabled} onChange={event => setEnabled(event.currentTarget.checked)} disabled={!detail.id || !!busy} />
-            {detail.id ? <Button size="xs" disabled={!!busy || enabled && !stages.length} onClick={() => void saveBinding()}>保存配置</Button> : <Button size="xs" leftSection={<Download size={14} />} disabled={!!busy} onClick={() => void install(detail)}>安装</Button>}</div>
+          <Switch label="允许用于创作" checked={enabled} onChange={event => setEnabled(event.currentTarget.checked)} disabled={!detail.id || !!busy} />
           <p>允许使用后，该技能成为所选环节的备选。实际使用默认主技能或本次选择，可在“默认技能”中切换；安装新的同类技能不会自动叠加。</p>
           {!!detail.tool_requirements.length && <p className="skills-tool-note">该技能还包含工具或脚本要求；当前接入创作规则，外部工具尚未接入。<span>{detail.tool_requirements.slice(0, 8).join(' · ')}</span></p>}
         </div>
@@ -185,10 +220,11 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
           },
         }}>{body}</Markdown>}</div>
         {error && <p className="skills-modal-error" role="alert">{error}</p>}
+        </div><footer className="skills-modal-footer"><Button variant="subtle" disabled={!!busy} onClick={()=>setDetail(null)}>关闭</Button>{detail.id ? <Button disabled={!!busy || enabled && !stages.length} loading={busy==='binding'} onClick={() => void saveBinding()}>保存配置</Button> : <Button leftSection={<Download size={14} />} disabled={!!busy} onClick={() => void install(detail)}>安装</Button>}</footer>
       </>}
     </Modal>
-    <Modal opened={repositoryOpen} onClose={() => setRepositoryOpen(false)} centered size="lg" radius={24} title="仓库管理" className="skills-modal" overlayProps={{ backgroundOpacity: 0.65, blur: 3 }}>
-      <p className="skills-detail-description">添加公开 GitHub 技能仓库，方便重复搜索。移除来源会保留已安装技能。</p>
+    <Modal opened={repositoryOpen} onClose={() => setRepositoryOpen(false)} centered size="lg" radius={14} title="仓库管理" className="skills-modal">
+      <div className="skills-modal-scroll"><p className="skills-detail-description">添加公开 GitHub 技能仓库，方便重复搜索。移除来源会保留已安装技能。</p>
       <form className="skills-repo-add" onSubmit={event => { event.preventDefault(); void action('repository', async () => {
         const response = await api<{ repo: string; skills: DiscoverableSkill[] }>('/skills/repositories', json('POST', { repo: repoInput }));
         await reload(); setRepo(response.repo); setSource('repository'); setTab('discover'); setResults(response.skills); setHasSearched(true); setTotal(response.skills.length); setRepoInput(''); setNotice('仓库已添加')
@@ -196,6 +232,7 @@ function SkillsCenter({ projectId, projectName }: { projectId?: string; projectN
       <div className="skills-repo-list">{repositories.map(item => <div key={item.repo}><Button type="button" onClick={() => { setRepo(item.repo); changeSource('repository'); setTab('discover'); setRepositoryOpen(false) }} data-workspace-control="" variant="subtle"><GitBranch size={15} />{item.repo}</Button>
         <ActionIcon variant="subtle" aria-label={`移除仓库 ${item.repo}`} disabled={!!busy} onClick={() => void action('remove-repository', async () => { await api(`/skills/repositories?repo=${encodeURIComponent(item.repo)}`, json('DELETE', {})); await reload() })}><Trash2 size={15} /></ActionIcon></div>)}</div>
       {busy === 'repository' && <div className="skills-progress" role="status"><LoaderCircle size={15} className="pc-spin" />正在扫描仓库技能</div>}{error && <p className="skills-modal-error" role="alert">{error}</p>}
+      </div><footer className="skills-modal-footer"><Button variant="default" onClick={()=>setRepositoryOpen(false)}>完成</Button></footer>
     </Modal>
   </section>
 }

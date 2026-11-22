@@ -5,9 +5,10 @@ type Result = Record<string, unknown>
 type Item = { section_ids: number[] }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
-/** Exact referenced sections determine a transfer only when EVERY cited section
- * belongs to the same sibling package. Mixed ownership never picks min(ID),
- * widens allowed IDs or drops the item; it remains a fixed local repair target. */
+/** Referenced sections determine ownership and transfer.
+ * - If ANY cited section belongs to this batch, keep it (supports cross-batch threads from expanded reads)
+ * - Otherwise, if EVERY cited section belongs to exactly one sibling, transfer to that sibling
+ * - Otherwise, it's ambiguous and requires local repair */
 export function splitSourceStoryScope(task: SourceStoryTask, input: unknown, tasks: SourceStoryTask[], sectionCount: number) {
   if (task.kind === 'timeline' && task.scope_version !== 2 || !['timeline', 'threads', 'uncertainties'].includes(task.kind)) return { owned: input, transfers: [] }
   const field = task.kind, root = input as Result, items = root[field] as Item[]
@@ -18,14 +19,20 @@ export function splitSourceStoryScope(task: SourceStoryTask, input: unknown, tas
       item.section_ids.some(id => !Number.isSafeInteger(id) || id < 0 || id >= sectionCount)) { invalid.push(index); return }
     const primary = (item as Item & { primary_section_id?: number }).primary_section_id
     if (field === 'timeline' && (primary === undefined || !item.section_ids.includes(primary))) { invalid.push(index); return }
-    if (field === 'timeline' ? own.has(primary!) : item.section_ids.some(id => own.has(id))) { kept.push(structuredClone(item)); return }
+
+    // NEW: Keep item if ANY section belongs to this batch (supports cross-batch threads)
+    if (field === 'timeline' ? own.has(primary!) : item.section_ids.some(id => own.has(id))) {
+      kept.push(structuredClone(item))
+      return
+    }
+
+    // Try to transfer to a sibling that owns ALL sections
     const owners = tasks.filter(sibling => sibling.kind === task.kind && sibling.key !== task.key && item.section_ids.every(id => sibling.section_ids?.includes(id)))
     if (owners.length !== 1) { invalid.push(index); return }
     transfers.push({ id: hash([task.key, owners[0]!.key, field, item]), from: task.key, to: owners[0]!.key, field, item: structuredClone(item) })
   })
   if (invalid.length) throw Object.assign(new Error(`${field}有 ${invalid.length} 条引用尚不能归入本批或唯一兄弟批次，需局部核对`), {
-    code: 'source_story_scope_ambiguous', sourceScopeIssue: { field, indices: invalid, allowed_section_ids: task.section_ids },
-    field_path: `${field}[${invalid[0]}].section_ids`,
+    code: 'source_story_scope_ambiguous', sourceScopeIssue: { field, indices: invalid, allowed_section_ids: task.section_ids, items: invalid.map(idx => items[idx]) },
   })
   const owned = { ...structuredClone(root), [field]: kept }
   return { owned, transfers }

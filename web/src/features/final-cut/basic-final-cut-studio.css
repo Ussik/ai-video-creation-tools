@@ -1,15 +1,10 @@
 .main-content.is-basic-final-cut { height: 100dvh; min-height: 0; overflow: hidden; }
-.main-content.is-basic-final-cut > .topbar { height: auto; min-height: 60px; flex: 0 0 auto; flex-wrap: wrap; gap: 10px; padding: 10px 20px; }
-.main-content.is-basic-final-cut .topbar-start { min-width: 0; }
-.main-content.is-basic-final-cut .topbar-actions { flex-wrap: wrap; max-width: 100%; }
 .basic-cut-studio { display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 20px; min-width: 0; color: var(--fc-text); }
 .main-content.is-final-cut > .basic-cut-studio { min-height: 0; flex: 1; overflow-y: auto; }
 .basic-cut-studio > * { flex-shrink: 0; }
-.basic-cut-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--fc-border-soft); }
-.basic-cut-title { display: grid; gap: 7px; min-width: 220px; margin-right: auto; }
-.basic-cut-title > span { color: var(--fc-text-muted); font-size: 11px; }
+.basic-cut-toolbar { margin: -16px -20px 0; }
+.basic-cut-title { width: clamp(130px, 16vw, 230px); min-width: 0; }
 .basic-cut-title .mantine-Input-input { font-weight: 550; }
-.basic-cut-duration { font-size: 12px; color: var(--fc-text-secondary); align-self: center; font-variant-numeric: tabular-nums; }
 .basic-cut-toolbar .mantine-Badge-root { align-self: center; }
 .basic-cut-grid { display: grid; grid-template-columns: minmax(210px, 250px) minmax(0, 1fr) minmax(280px, 320px); gap: 16px; min-width: 0; }
 .basic-cut-assets, .basic-cut-inspector { min-width: 0; background: var(--fc-panel); border: 1px solid var(--fc-border-soft); border-radius: 8px; }
@@ -86,7 +81,46 @@
 .basic-cut-empty { display: grid; place-items: center; align-content: center; gap: 17px; min-height: 460px; color: var(--fc-text-muted); }
 .basic-cut-empty h2 { font-size: 20px; color: var(--fc-text); margin: 0; }
 .basic-cut-empty p { margin: 0; font-size: 13px; text-align: center; line-height: 1.7; }
-.basic-cut-dialog-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 22px; }
+.basic-cut-dialog > .mantine-Modal-header {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--fc-border-soft);
+}
+.basic-cut-dialog .mantine-Modal-title { font-size: 17px; font-weight: 600; }
+.basic-cut-dialog-scroll {
+  min-height: 0;
+  padding: 22px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.basic-cut-dialog-scroll p { margin: 12px 0 0; color: var(--fc-text-secondary); font-size: 13px; line-height: 1.7; }
+.basic-cut-dialog-scroll p:first-child { margin-top: 0; }
+.basic-cut-dialog-clip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--fc-border-soft);
+  border-radius: 9px;
+  background: var(--fc-surface-muted);
+}
+.basic-cut-dialog-clip > svg { flex: none; color: var(--fc-text-secondary); }
+.basic-cut-dialog-clip > div { display: grid; gap: 3px; min-width: 0; }
+.basic-cut-dialog-clip small { color: var(--fc-text-muted); }
+.basic-cut-dialog-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--fc-border-soft);
+  background: var(--fc-surface);
+}
+@media (max-width: 480px) {
+  .basic-cut-dialog-actions { padding-inline: 16px; }
+  .basic-cut-dialog-actions .mantine-Button-root { flex: 1 1 auto; min-height: 36px; height: auto; padding-block: 8px; }
+  .basic-cut-dialog-actions .mantine-Button-label { white-space: normal; line-height: 1.5; }
+}
 .basic-cut-export-status, .basic-cut-download { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; color: var(--fc-text-secondary); flex-wrap: wrap; }
 .basic-cut-export-status small { color: var(--fc-text-muted); }
 .basic-cut-download .mantine-Button-root { margin-left: auto; }

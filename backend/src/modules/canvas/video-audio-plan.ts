@@ -69,6 +69,7 @@ export function recoverGeneratedVideoAudioPlanSources(plan: VideoAudioPlan, sour
 }
 
 const sourceInput = z.object({
+  text_generation_options: textGenerationOptionsInput,
   model_id: z.string().trim().min(1), shot_id: z.string().trim().min(1).nullable(),
   shot_video_prompt: z.string().max(120000, '镜头正文、边界与结构化声音合计超过 120000 字符，请精简非台词描述后重新分析；不会截断已确认台词'), image_body: z.string().max(80000),
   source_signature: z.string().regex(/^[a-f0-9]{16}$/),
@@ -147,6 +148,7 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
   app.post('/api/projects/:id/canvas/video-audio-plan', async (request, reply) => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params), input = sourceInput.parse(request.body)
     required('projects', id)
+    const withReasoning = bindTaskReasoningById(input.model_id, input.text_generation_options)
     const currentShot = () => {
       if (!input.shot_id) {
         if (input.shot_video_prompt) fail('自由画布分析不能引用未关联镜头的分镜提示词')
@@ -195,7 +197,8 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
           shot: shot ? { title: shot.title, source_scene_id: shot.source_scene_id, start_state: shot.start_state, end_state: shot.end_state, cut_note: shot.cut_note, duration: shot.duration, audio_plan: shot.audio_plan,
             continuity_plan: shot.continuity_plan || null } : null,
           neighbors, scene_sound_context: sharedSound, modify_audio: input.modify_audio })
-      const legacyIdentity = { version: 1, task, model: creativeModelIdentity(input.model_id) }
+      const reasoningIdentity = input.text_generation_options?.reasoning ? { reasoning: input.text_generation_options.reasoning } : {}
+      const legacyIdentity = { version: 1, task, model: creativeModelIdentity(input.model_id), ...reasoningIdentity }
       const legacy = creativeGenerationSteps(id, `video-handoff:${creativeInputHash([input.shot_id, input.source_signature])}`, legacyIdentity, controller.signal)
       const retained = input.attempt === 0 && legacy.checkpoint.steps.candidate?.input_hash === creativeInputHash(legacyIdentity)
         ? legacy.checkpoint.steps.candidate.value : undefined
@@ -208,9 +211,9 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
       if (payload.shot) payload.shot.continuity_plan = shot?.continuity_plan ? { status: shot.continuity_plan.status } : null
       const compactTask = task.slice(0, payloadStart) + JSON.stringify(payload) +
         '\n输出只含 motion_prompt、audio_plan、boundary_conflicts；禁止额外 title、duration、video_prompt。动作各段与音效的次数及先后关系须一致；无法确定时逐字引用相反表达和音效，不默选任一版本。'
-      const identity = { version: 2, task: compactTask, model: legacyIdentity.model, attempt: input.attempt }
+      const identity = { version: 2, task: compactTask, model: legacyIdentity.model, attempt: input.attempt, ...reasoningIdentity }
       let modelRequests = 0, reused = true
-      return await withModelAdmission(`creative:video-handoff:${id}:${creativeInputHash([input.shot_id, input.source_signature])}`, controller.signal, async () => {
+      return await withReasoning(() => withModelAdmission(`creative:video-handoff:${id}:${creativeInputHash([input.shot_id, input.source_signature])}`, controller.signal, async () => {
         const steps = creativeGenerationSteps(id, `video-handoff:${creativeInputHash([input.shot_id, input.source_signature])}:v2:${input.attempt}`, identity, controller.signal)
         const validatePlan = (value: z.infer<typeof videoHandoffPlanSchema>) => {
               if (creativeModelIdentity(input.model_id) !== legacyIdentity.model) fail('模型配置已变化，请按当前配置重新分析；原候选已保留', 409)
@@ -251,7 +254,7 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
         if (sharedSound.status === 'accepted' && !input.modify_audio) result.audio_plan.scene_sound = sharedSound.plan
         reportModelResult({ phase: 'quality', stage: 'continuity_review', status: 'passed', cache_hit: reused, local_reuse: reused, model_request_count: modelRequests, final_state: 'ready' })
         return { ...result, source_signature: input.source_signature, attempt: input.attempt, cache_hit: reused, model_request_count: modelRequests }
-      })
+      }))
     } catch (error) {
       if (controller.signal.aborted) fail('镜头承接分析已取消', 499)
       if (isStructuredOutputError(error)) fail(error.message, 502)
@@ -263,3 +266,4 @@ export function registerVideoAudioPlanRoutes(app: FastifyInstance, context: Cont
 }
 import { reportModelResult, withModelOperationStage } from '../generation/model-result-observation.js'
 import { creativeGenerationSteps, creativeInputHash, creativeModelIdentity } from '../skills/creative-model-state.js'
+import { bindTaskReasoningById, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'

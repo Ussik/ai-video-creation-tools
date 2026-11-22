@@ -199,18 +199,59 @@ export function parseStructuredOutput<T>(raw: string, schema: z.ZodType<T>, opti
 
 /** A single complete root, optionally inside exactly one JSON code fence.
  * Unlike candidate recovery this never accepts surrounding prose, nested
- * fragments, multiple roots, unfinished fences or repaired JSON syntax. */
-export function completeStructuredRoot(raw: string, options: { allowFenceExplanation?: boolean } = {}): { value: unknown } | undefined {
+ * fragments, multiple roots, unfinished fences or repaired JSON syntax.
+ *
+ * Set `fallbackToCandidate` to automatically try candidate scanning if the
+ * strict complete-root check fails — useful for local corrections where the
+ * model may have added explanation text. */
+export function completeStructuredRoot(raw: string, options: {
+  allowFenceExplanation?: boolean
+  fallbackToCandidate?: boolean
+  candidateSchema?: z.ZodType
+} = {}): { value: unknown; recovered?: boolean } | undefined {
   const text = raw.trim()
   const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(text)
   let payload = fenced ? fenced[1]! : text
   if (!fenced && options.allowFenceExplanation) {
     // Exactly one explicit JSON fence with bounded plain-language decoration.
-    // Decoration cannot contain another candidate, code fence or reasoning tag.
-    // This is envelope handling, never arbitrary brace/fragment recovery.
-    const envelope = /^([^`{}\[\]<>]{0,512})```json[ \t]*\r?\n([\s\S]*?)\r?\n```([^`{}\[\]<>]{0,512})$/i.exec(text)
-    if (envelope && !envelope[2]!.includes('```')) payload = envelope[2]!
+    // Relaxed pattern: allow backticks, brackets in decoration, but no nested fences or reasoning tags.
+    // The key safety check is: no nested ``` inside the JSON fence itself.
+    const envelope = /^([\s\S]{0,1024}?)```json[ \t]*\r?\n([\s\S]*?)\r?\n```([\s\S]{0,1024}?)$/i.exec(text)
+    if (envelope && !envelope[2]!.includes('```') && !/<think>/i.test(envelope[1]! + envelope[3]!)) {
+      payload = envelope[2]!
+    }
   }
+
+  // Attempt to parse as-is first
   try { return { value: JSON.parse(payload) } }
-  catch { return undefined }
+  catch (firstError) {
+    // Attempt automatic JSON repair for common issues
+    const repaired = attemptJsonRepair(payload)
+    if (repaired !== payload) {
+      try { return { value: JSON.parse(repaired) } }
+      catch { /* Fall through to candidate scanning if enabled */ }
+    }
+
+    // If strict parsing failed and fallback is enabled, try candidate scanning
+    if (options.fallbackToCandidate && options.candidateSchema) {
+      const candidate = parseStructuredOutput(raw, options.candidateSchema)
+      if (candidate !== null) {
+        return { value: candidate, recovered: true }
+      }
+    }
+
+    return undefined
+  }
+}
+
+/** Attempt to repair common JSON syntax errors in local corrections.
+ * Uses the same strong heuristic repair that candidate scanning uses. */
+function attemptJsonRepair(json: string): string {
+  // First apply syntax recovery (handles newlines in strings, trailing commas)
+  const syntaxFixed = recoverJsonSyntax(json)
+
+  // Then apply the strong quote repair heuristic
+  const { text: quoteFixed, applied } = repairUnescapedStringQuotes(syntaxFixed)
+
+  return applied ? quoteFixed : syntaxFixed
 }

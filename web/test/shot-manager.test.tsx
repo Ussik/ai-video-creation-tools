@@ -57,7 +57,7 @@ async function confirmDialog(label = '彻底删除') {
   assert.ok(confirm, `dialog action ${label}`)
   await act(async () => confirm.click())
 }
-async function mount(options: { refresh?: () => Promise<unknown>; close?: () => void; add?: (ids: string[], canvas: string) => Promise<void>; notice?: (message: string) => void; plan?: (sceneIds?: string[]) => void; planClip?: () => void; initialDesignId?: string | null; initialSceneIds?: string[]; preview?: Record<string, unknown> } = {}) {
+async function mount(options: { presentation?: 'modal' | 'page'; registerNavigationGuard?: (guard: (() => Promise<boolean>) | null) => void; refresh?: () => Promise<unknown>; close?: () => void; add?: (ids: string[], canvas: string) => Promise<void>; notice?: (message: string) => void; plan?: (sceneIds?: string[]) => void; planClip?: () => void; initialDesignId?: string | null; initialSceneIds?: string[]; preview?: Record<string, unknown> } = {}) {
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
   const originalFetch=globalThis.fetch
   const previewFetch: typeof fetch=async(url,init)=>{
@@ -70,7 +70,7 @@ async function mount(options: { refresh?: () => Promise<unknown>; close?: () => 
     return originalFetch(url,init)
   }
   globalThis.fetch=previewFetch
-  const render = async (detail = project, opened = true) => act(async () => root.render(<MantineProvider env="test"><ShotManager opened={opened} onClose={options.close || (() => {})} detail={detail} activeCanvasId="canvas-a" onRefresh={options.refresh || (async () => {})} onAddToCanvas={options.add || (async () => {})} onNotice={options.notice} onPlan={options.plan} onPlanClip={options.planClip} initialDesignId={options.initialDesignId} initialSceneIds={options.initialSceneIds} /></MantineProvider>))
+  const render = async (detail = project, opened = true) => act(async () => root.render(<MantineProvider env="test"><ShotManager opened={opened} presentation={options.presentation} registerNavigationGuard={options.registerNavigationGuard} onClose={options.close || (() => {})} detail={detail} activeCanvasId="canvas-a" onRefresh={options.refresh || (async () => {})} onAddToCanvas={options.add || (async () => {})} onNotice={options.notice} onPlan={options.plan} onPlanClip={options.planClip} initialDesignId={options.initialDesignId} initialSceneIds={options.initialSceneIds} /></MantineProvider>))
   await render()
   return { render, destroy: async () => { await act(() => root.unmount()); container.remove(); if(globalThis.fetch===previewFetch)globalThis.fetch=originalFetch } }
 }
@@ -160,6 +160,25 @@ test('selected shots are sent to the chosen target canvas without writing a grap
   } finally { await view.destroy() }
 })
 
+test('the page confirms a target before adding the focused shot and keeps a single entry point', async t => {
+  const added: Array<{ ids: string[]; canvas: string }> = []
+  t.mock.method(globalThis, 'fetch', async () => Response.json(snapshot()))
+  const view = await mount({ presentation: 'page', add: async (ids, canvas) => { added.push({ ids, canvas }) } })
+  try {
+    await click('编辑镜头：告别')
+    assert.equal([...document.querySelectorAll('button')].filter(node => node.textContent === '加入画布').length, 1)
+    await click('加入画布')
+    assert.match(document.querySelector('[role="dialog"]')!.textContent!, /1 个镜头.*告别/)
+    assert.deepEqual(added, [])
+    await click('取消')
+    assert.deepEqual(added, [])
+    await click('加入画布')
+    await choose('加入目标画布', '画布乙')
+    await click('确认加入')
+    assert.deepEqual(added, [{ ids: ['b'], canvas: 'canvas-b' }])
+  } finally { await view.destroy() }
+})
+
 test('a revision conflict keeps edits until an explicit reload and then unlocks the manager', async t => {
   let reads = 0
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
@@ -228,17 +247,18 @@ test('duplication uses the saved shot action and selects the returned independen
 })
 
 
-test('the workspace exposes scene totals, scan-friendly shot columns and factual production status', async t => {
+test('the workspace exposes scene totals, image cards and factual production status', async t => {
   const next = snapshot(); next.shots[0].shot.selected_asset_id = 'selected-video'
   t.mock.method(globalThis, 'fetch', async () => Response.json(next))
   const view = await mount({ plan: () => {} })
   try {
     assert.ok(document.querySelector('[aria-label="分镜场次导航"]'))
     assert.match(document.querySelector('[aria-label="分镜场次导航"]')!.textContent!, /2 镜.*10 秒/)
-    assert.ok(document.querySelector('table[aria-label="分镜镜头表"]'))
-    assert.match(document.querySelector('table')!.textContent!, /画面与描述.*时长.*制作状态.*画布/)
-    assert.match(document.querySelector('table')!.textContent!, /已选片/)
-    assert.match(document.querySelector('table')!.textContent!, /待制作/)
+    assert.ok(document.querySelector('[role="list"][aria-label="分镜镜头列表"]'))
+    assert.equal(document.querySelector('table'), null)
+    assert.equal(document.querySelectorAll('.shot-manager-card').length, 2)
+    assert.match(document.querySelector('.shot-manager-grid')!.textContent!, /已选片/)
+    assert.match(document.querySelector('.shot-manager-grid')!.textContent!, /待制作/)
     assert.equal(button('规划分镜').disabled, false)
     await click('场次：第 1 集 · 车站')
     assert.ok(hasButton('编辑镜头：告别'))
@@ -710,4 +730,28 @@ test('confirmation states only nonzero media file impact and keeps blocker reaso
     assert.match(copy,/同时删除 1 个本地媒体文件/);assert.doesNotMatch(copy,/内部文件名/)
     await click('取消');assert.deepEqual(writes,[])
   } finally {await view.destroy()}
+})
+
+
+test('page presentation keeps cards inline and guards dirty cross-page navigation', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json(snapshot()))
+  let leave: (() => Promise<boolean>) | null = null
+  const view = await mount({ presentation: 'page', registerNavigationGuard: guard => { leave = guard } })
+  try {
+    assert.ok(document.querySelector('.shot-manager-page .shot-manager-grid'))
+    assert.equal(document.querySelector('[role="dialog"]'), null)
+    let cleanDecision!: Promise<boolean>
+    await act(() => { cleanDecision = leave!() })
+    assert.equal(await cleanDecision, true)
+    await type('镜头标题', '未保存的新标题')
+    let decision!: Promise<boolean>
+    await act(() => { decision = leave!() })
+    await click('继续编辑')
+    assert.equal(await decision, false)
+    assert.equal((document.querySelector('.shot-manager-detail input') as HTMLInputElement).value, '未保存的新标题')
+    await act(() => { decision = leave!() })
+    await click('放弃修改')
+    assert.equal(await decision, true)
+  } finally { await view.destroy() }
+  assert.equal(leave, null)
 })

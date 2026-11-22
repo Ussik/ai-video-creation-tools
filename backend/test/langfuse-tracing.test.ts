@@ -60,10 +60,12 @@ test('concurrent and late settlements export each immutable child once under its
 test('metadata excludes raw labels, URLs, identifiers, reasons and unknown usage', async () => {
   const c = capture(), secret = 'PRIVATE正文-token-https://secret.test', o = c.tracer.observation({ taskId: secret, projectId: secret, modelId: secret, label: secret, owner: secret })
   o.dispatch({ request_id: secret, model_id: secret, task_id: secret, step_id: secret, attempt_id: secret, remote_id: secret, raw_reason: secret,
-    endpoint: secret, prompt: secret, request_purpose: secret, transport_kind: secret, failure_reason: secret, delivery: secret, request_bytes: 9, output_tokens: Infinity, input_tokens: -1 })
-  o.metrics({ request_id: secret, model_id: secret, remote_id: secret, raw_reason: secret, error: secret, input_tokens: -1, output_tokens: NaN, delivery: 'unknown' }); o.finish('failed'); await c.tracer.flush()
+    endpoint: secret, prompt: secret, request_purpose: secret, transport_kind: secret, failure_reason: secret, delivery: secret, request_bytes: 9, output_tokens: Infinity, input_tokens: -1,
+    reasoning_requested: 'high', reasoning_effective: 'off', reasoning_source: 'policy' })
+  o.metrics({ request_id: secret, model_id: secret, remote_id: secret, raw_reason: secret, error: secret, input_tokens: -1, output_tokens: NaN, delivery: 'unknown', reasoning_effective: secret }); o.finish('failed'); await c.tracer.flush()
   assert.equal(JSON.stringify(c.batches).includes(secret), false)
   const child = c.spans().find(span => span.parentSpanId)!, data = metadata(child)
+  assert.equal(data.reasoning_requested, 'high'); assert.equal(data.reasoning_effective, 'off'); assert.equal(data.reasoning_source, 'policy')
   assert.equal(data.request_bytes, 9); assert.equal(data.input_tokens, undefined); assert.equal(data.output_tokens, undefined); assert.match(data.model_ref, /^[a-f0-9]{64}$/)
   assert.equal(data.model_ref, metadata(c.spans().find(span => !span.parentSpanId)!).model_ref)
   assert.equal(attribute(child, 'langfuse.observation.usage_details'), undefined); assert.equal(child.status.message, 'unknown_result')

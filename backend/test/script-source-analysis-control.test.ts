@@ -369,6 +369,37 @@ test('public analysis marks uncertain dispatch as blocked without changing the l
   assert.equal(scriptSourceDocument(item.id)!.analysis!.resume?.available, true)
 })
 
+test('a replacement analysis exposes the unresolved request from the same directory run', async () => {
+  const item = project('跨轮次目录恢复'), runId = 'replacement-directory', previousId = 'previous-directory'
+  const document = { project_id: item.id, filename: '跨轮次目录恢复.txt', content: '跨轮次目录恢复：林舟得到钥匙，调查结束后回家。', updated_at: item.stamp }
+  const state = { id: runId, source_version: scriptSourceVersion(document), model_id: 'model', status: 'failed',
+    phase: 'reading', analysis_mode: 'extract', pipeline_version: sourceAnalysisPipelineVersion,
+    completed_chunks: 0, total_chunks: 1, sections: [], updated_at: now(),
+    failure: { stage: 'content', message: '文本模型生成失败：上次原稿分析请求的受理结果未知，不能自动重新生成。' } }
+  markSourceModelRun(item.id, runId)
+  markSourceModelRun(item.id, previousId)
+  run('INSERT INTO script_source_analyses (project_id,id,source_version,status,snapshot,updated_at) VALUES (?,?,?,?,?,?)',
+    item.id, runId, state.source_version, state.status, JSON.stringify(state), state.updated_at)
+  for (const owner of [runId, previousId, 'unrelated-directory']) {
+    run('INSERT INTO source_request_dispatch_links (project_id,scope,request_key,run_id,source_updated_at,local_request_id) VALUES (?,?,?,?,?,?)',
+      item.id, owner === 'unrelated-directory' ? 'other-scope' : 'same-scope', 'first-page', owner, item.stamp, owner)
+  }
+  for (const [scope, owner] of [['same-scope', previousId], ['other-scope', 'unrelated-directory']]) {
+    run('INSERT INTO source_model_requests (project_id,scope,request_key,run_id,state,delivery,updated_at) VALUES (?,?,?,?,?,?,?)',
+      item.id, scope, 'second-page', owner, 'dispatched', 'unknown', item.stamp)
+  }
+  const analyzer = createScriptSourceAnalyzer(async () => { throw new Error('no model call expected') })
+  try {
+    assert.equal(scriptSourceDocument(item.id)!.analysis!.resume?.action, 'reconcile_request')
+    assert.deepEqual(analyzer.requestRecovery(item.id).blockers.map(blocker => blocker.run_id), [previousId])
+    assert.throws(() => analyzer.start(item.id, 'model'), { code: 'source_request_unknown' })
+    run("UPDATE script_source_analyses SET status='paused',snapshot=? WHERE project_id=?",
+      JSON.stringify({ ...state, status: 'paused', failure: undefined }), item.id)
+    assert.equal(scriptSourceDocument(item.id)!.analysis!.resume?.action, 'reconcile_request')
+    assert.deepEqual(analyzer.requestRecovery(item.id).blockers.map(blocker => blocker.run_id), [previousId])
+  } finally { await analyzer.close(); run('DELETE FROM projects WHERE id=?', item.id) }
+})
+
 for (const incomplete of [false,true]) test(`explicit continue preserves ${incomplete?'uncertain intent':'completed paid correction'} and cannot buy another whole correction`, async()=>{
   const item=project(incomplete?'不确定纠正保护':'完成纠正本地重验')
   let initial=0, corrections=0

@@ -6,13 +6,14 @@ import ReferencePreparationRecovery, { ReferencePrimaryAction, referenceIsWorkin
 import { referenceRecoveryView, useCanvasPreparationRecovery, type ReferenceAction } from './useCanvasPreparationRecovery'
 import { useEffect, useRef, useState } from 'react'
 import { UnstyledButton, ActionIcon, Button, Checkbox, Group, Modal, NumberInput, Popover, Select, Textarea, TextInput } from '@mantine/core'
-import { Check, ChevronRight, Clapperboard, Info, LoaderCircle, Plus, Puzzle, Save, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Clapperboard, Info, LoaderCircle, Plus, Puzzle, Save, Trash2 } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { ApiError, Model, ProjectDetail, ScriptCanvasCheck, ScriptCanvasPlan, ScriptCanvasResult } from '../../shared/api/api'
 import type { StoryboardPlanningContext, StoryboardPlanningResult, StoryboardPlanningTask, StoryboardShotDraft } from '@video-studio/shared/storyboard/storyboard-planning-types'
 import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import { requestScriptCanvas } from '../script/script-canvas-handoff'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, taskReasoningLabel, useTaskReasoning } from '../models/TaskReasoningSelect'
 import './storyboard-planner.css'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
 import type { SkillAssignment, SkillPolicy } from '../../shared/api/skills-api'
@@ -23,7 +24,7 @@ import { cancelPlanningRequest, cancelPlanningTask, forgetPlanningTask, lookupPl
 type Props = {
   opened: boolean; onClose: () => void; detail: ProjectDetail; models: Model[]; initialSceneIds: string[];
   onRefresh: () => Promise<unknown>; onOpenCanvas: () => void; onNotice: (message: string) => void
-  intent?: 'plan' | 'canvas'; onSaved?: (result: ScriptCanvasResult) => void | Promise<void>
+  intent?: 'plan' | 'canvas'; onSaved?: (result: ScriptCanvasResult) => void | Promise<void>; presentation?: 'modal' | 'page'; returnLabel?: string
 }
 const batchLimit = 10
 type PlanningResult = StoryboardPlanningResult & { skill_assignment?: SkillAssignment; motion_skill_assignment?: SkillAssignment }
@@ -73,8 +74,11 @@ function episodeDocumentIds(context: StoryboardPlanningContext, sceneIds: string
   return context.documents.filter(document => document.artifact_type === 'episode_script' && episodes.has(document.episode_number) &&
     (!context.default_document_ids || context.default_document_ids.includes(document.id))).map(document => document.id)
 }
-export default function StoryboardPlanner({ opened, onClose, detail, models, initialSceneIds, onRefresh, onOpenCanvas, onNotice, intent = 'canvas', onSaved }: Props) {
+export default function StoryboardPlanner({ opened, onClose, detail, models, initialSceneIds, onRefresh, onOpenCanvas, onNotice, intent = 'canvas', onSaved, presentation = 'modal', returnLabel = intent === 'plan' ? '返回分镜管理' : '返回剧本' }: Props) {
   const planningOnly = intent === 'plan'
+  const isPage = presentation === 'page'
+  const scenePicker = useRef<HTMLElement>(null)
+  const [selectingScenes, setSelectingScenes] = useState(false)
   const dialog = useAppDialog({ zIndex: 350 })
   const [guarding, setGuarding] = useState(false), [settingsRevision, setSettingsRevision] = useState(0)
   const guardLock = useRef(false), reviewLock = useRef(false), canvasLock = useRef(false)
@@ -118,9 +122,10 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const eligibleModels = models.filter(model => model.modality === 'text' && model.enabled)
   const videoModels = models.filter(model => model.modality === 'video' && model.enabled)
   const { modelId, selectModel } = useSharedModelSelection('text', eligibleModels, { active: opened, locked: !!pending || guarding || !!imported.current })
+  const reasoning = useTaskReasoning(eligibleModels.find(model => model.id === modelId))
   useEffect(() => () => releaseRequest(), [])
   useEffect(() => {
-    if (!opened) { releaseRequest(); return }
+    if (!opened) { releaseRequest(); setSelectingScenes(false); return }
     initialized.current = false; skillInitialized.current = false; referenceSkillInitialized.current = false; contextReady.current = false
     restoreAttempted.current = false; taskRef.current = null; taskInputRef.current = null; cancelRequested.current = false
     setPlanningTask(null); setTaskConnection(''); setCancellingTask(false); setCancelUnconfirmed(false)
@@ -209,6 +214,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const invalidShotCount = !automaticShotCount && (!Number.isInteger(Number(shotsPerScene)) || Number(shotsPerScene) < 2 || Number(shotsPerScene) > 8)
   const awaitingReview = result?.directing_review?.status === 'pending_review'
   const reviewStatus = result?.directing_review?.status
+  const reviewDeliveryPending = ['structured_initial_delivery_pending', 'storyboard_review_timeout'].includes(result?.directing_review?.error?.code || '')
   const needsManualReview = reviewStatus === 'review_inconclusive_needs_user' || reviewStatus === 'inconclusive'
   const saveableReview = ['passed', 'warnings', 'review_inconclusive_no_action', 'review_inconclusive_needs_user', 'inconclusive'].includes(reviewStatus || '')
   const issue = result && !applied.current && resultModelId !== modelId ? '文本模型已切换，当前分镜预览仍保留，请重新规划后保存。'
@@ -402,6 +408,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       if (turn !== serial.current) return
       const input: PlanningTaskInput = {
         signature: scope.signature, scene_ids: planningIds, document_ids: documentIds, ...(skillManual ? { skill_ids: skillIds } : {}), model_id: modelId, mode: effectivePlanningMode,
+        ...reasoning.request,
         ...(!automaticShotCount ? { shots_per_scene: Number(shotsPerScene) } : {}), ...(durationChoice === 'fixed' ? { target_duration: Number(target) } : {}),
         ...(durationChoice === 'reestimate' ? { duration_mode: 'reestimate' } : {}), instructions,
         ...(targetVideoModelId ? { target_video_model_id: targetVideoModelId } : {}),
@@ -472,12 +479,20 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   async function reviewDraft(repair = false) {
     if (!result || pending || reviewLock.current || guarding || applied.current || result.directing_review?.status === 'pending_review' || planIssue(result)) return
     reviewLock.current = true
-    const candidate = result, turn = ++serial.current, abort = new AbortController(); controller.current = abort
-    setPending(repair ? 'repair' : 'review'); setError(null)
+    const candidate = result, turn = ++serial.current
+    let abort: AbortController | undefined
     try {
+      if (!repair && reviewDeliveryPending) {
+        const confirmed = await dialog.confirm({ title: '发起新的导演复核？', message: '上次请求结果尚未确认。新的复核会再次调用模型，可能产生额外用量。',
+          confirmLabel: '发起新复核', cancelLabel: '返回草稿' })
+        if (!confirmed || turn !== serial.current || !live.current.opened || live.current.projectId !== detail.id) return
+      }
+      abort = new AbortController(); controller.current = abort
+      setPending(repair ? 'repair' : 'review'); setError(null)
       const response = await api<NonNullable<PlanningResult['directing_review']> | Pick<PlanningResult, 'scenes' | 'directing_review'>>(`/projects/${detail.id}/script/storyboard/${repair ? 'repair' : 'review'}`, { ...json('POST', {
         ...(repair ? { review_id: candidate.directing_review?.review_id } : {}),
         signature: candidate.signature, model_id: modelId, mode: candidate.mode || 'update', instructions: candidate.instructions || '',
+        ...((candidate.text_generation_options ?? taskInputRef.current?.text_generation_options) ? { text_generation_options: candidate.text_generation_options ?? taskInputRef.current?.text_generation_options } : {}),
         ...(candidate.duration_mode ? { duration_mode: candidate.duration_mode } : {}),
         document_ids: documentIds, ...(candidate.target_video_model_id ? { target_video_model_id: candidate.target_video_model_id } : {}),
         scenes: candidate.scenes.map(({ scene_id, scene_duration, shots }) => ({ scene_id, scene_duration, shots })),
@@ -486,7 +501,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         setResult(current => current === candidate ? { ...current, ...('scenes' in response ? response : { directing_review: response }) } : current)
         setPlanningTask(current => current && { ...current, can_resume: false })
       }
-    } catch (issue) { if (turn === serial.current && !abort.signal.aborted) setError(planningError(issue)) }
+    } catch (issue) { if (turn === serial.current && !abort?.signal.aborted) setError(planningError(issue)) }
     finally { reviewLock.current = false; if (turn === serial.current) setPending(null) }
   }
   async function commitPlan(abort: AbortController, active: () => boolean, saveOnly = false) {
@@ -552,7 +567,8 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
           if (!plan) {
             if (action === 'adopt') throw new Error('待采用结果已变化，请刷新恢复状态后核对；未重新调用模型。')
             if (!eligibleModels.some(model => model.id === modelId)) throw new Error('请选择文本模型，先整理分镜所需的人物、场景与道具设定，再加入画布。')
-            const body = action === 'prepare-current' ? await recovery.currentScopeBody(check.signature, modelId, abort.signal, referenceManual ? { skill_ids: referenceSkillIds } : {}) : recovery.actionBody(action, check.signature, modelId, referenceManual ? { skill_ids: referenceSkillIds } : {})
+            const options = { ...reasoning.request, ...(referenceManual ? { skill_ids: referenceSkillIds } : {}) }
+            const body = action === 'prepare-current' ? await recovery.currentScopeBody(check.signature, modelId, abort.signal, options) : recovery.actionBody(action, check.signature, modelId, options)
             referenceRequestActive = true
             referenceRequestId = body.request_id
             acceptedReference.current = abort
@@ -651,11 +667,38 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
   const referenceActivity = !planningOnly && hasPreview && pending ? pending === 'references' ? '正在整理参考' : pending === 'save' ? saveLabel : undefined : undefined
   const referenceWorking = referenceIsWorking(recovery.capabilities, referenceActivity)
   const backgroundPlanning = (pending === 'plan' || pending === 'preview') && context?.planning_task_version === 1
-  return <><Modal opened={opened} onClose={() => void requestClose()} title={planningOnly ? '规划分镜' : '加入画布'} centered radius={18} size="min(940px, calc(100vw - 32px))" zIndex={240}
-    classNames={{ content: 'storyboard-planner', header: 'storyboard-planner-header', body: 'storyboard-planner-body', close: 'storyboard-planner-close' }}
-    closeButtonProps={{ disabled: guarding || !!pending && pending !== 'context' && pending !== 'references' && !backgroundPlanning, 'aria-label': '关闭分镜规划' }} closeOnClickOutside={!pending} closeOnEscape={!pending}>
+  const closeDisabled = guarding || !!pending && pending !== 'context' && pending !== 'references' && !backgroundPlanning
+  const currentStep = pending === 'save' || pending === 'references' || planIsSaved ? 4
+    : pending === 'plan' || pending === 'preview' ? 2
+    : view === 'preview' ? 3 : sceneIds.length && !selectingScenes ? 2 : 1
+  const selectedPlanningMode = reusingSavedPlan ? 'existing' : effectivePlanningMode
+  const planningModes = [
+    { value: 'redesign', label: '重新设计新方案', description: '从所选场次生成一套新分镜。' },
+    { value: 'update', label: '沿用当前方案更新', description: '在当前方案中调整镜头。', disabled: requiresRedesign },
+    ...(canReuseSavedPlan ? [{ value: 'existing', label: '复用已保存分镜', description: '保留已保存的镜头。', disabled: requiresRedesign }] : []),
+  ]
+  function changePlanningMode(value: string | null) {
+    void changeSettings(() => {
+      if (value === 'existing') { setReplanExisting(false); setPlanningMode('update') }
+      else if (value === 'redesign' || value === 'update') { setPlanningMode(value); setReplanExisting(true) }
+      else return
+      setDurationChoice('preserve')
+    })
+  }
+  return <><Modal opened={opened} fullScreen={isPage} onClose={() => void requestClose()} title={planningOnly ? '规划分镜' : '加入画布'} centered radius={isPage ? 0 : 18} size="min(940px, calc(100vw - 32px))" zIndex={240}
+    classNames={{ content: `storyboard-planner${isPage ? ' storyboard-planner-page' : ''}`, header: 'storyboard-planner-header', body: 'storyboard-planner-body', close: 'storyboard-planner-close' }}
+    closeButtonProps={{ disabled: closeDisabled, 'aria-label': '关闭分镜规划' }} closeOnClickOutside={!pending} closeOnEscape={!pending}>
+    {isPage && <header className="storyboard-planner-page-header">
+      <div><Button type="button" variant="subtle" leftSection={<ArrowLeft size={15} />} disabled={closeDisabled} onClick={() => void requestClose()} data-workspace-control="">{returnLabel}</Button><span aria-hidden="true">/</span><strong>规划分镜</strong></div>
+      <nav aria-label="分镜规划步骤">
+        <UnstyledButton type="button" aria-current={currentStep === 1 ? 'step' : undefined} disabled={locked || !rangeIds.length} onClick={() => { setSelectingScenes(true); setView('setup'); scenePicker.current?.querySelector<HTMLInputElement>('input:not(:disabled)')?.focus() }}><b>01</b>选择内容</UnstyledButton><ChevronRight size={13} aria-hidden="true" />
+        <UnstyledButton type="button" aria-current={currentStep === 2 ? 'step' : undefined} disabled={locked || !sceneIds.length} onClick={() => { setSelectingScenes(false); setView('setup') }}><b>02</b>生成计划</UnstyledButton><ChevronRight size={13} aria-hidden="true" />
+        <UnstyledButton type="button" aria-current={currentStep === 3 ? 'step' : undefined} disabled={locked || !hasPreview} onClick={() => setView('preview')}><b>03</b>预览确认</UnstyledButton><ChevronRight size={13} aria-hidden="true" />
+        <span aria-current={currentStep === 4 ? 'step' : undefined}><b>04</b>{planningOnly ? '保存方案' : '加入画布'}</span>
+      </nav>
+    </header>}
     <div className="storyboard-planner-workspace">
-      <aside className="storyboard-planner-sidebar" aria-label="分镜场次">
+      <aside ref={scenePicker} className="storyboard-planner-sidebar" aria-label="分镜场次">
         <header><strong>场次</strong><span>已选 {sceneIds.length} / {rangeIds.length}</span></header>
         <p className="storyboard-planner-note">每批最多 {batchLimit} 场，可分批{planningOnly ? '规划' : '加入'}</p>
         <Group className="storyboard-planner-selection-tools" role="group" aria-label="场次批次选择" gap={6} wrap="nowrap">
@@ -679,11 +722,11 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
         </div>
       </aside>
       <main className="storyboard-planner-main">
-        <nav className="storyboard-planner-tabs" aria-label="分镜工作步骤">
+        {!isPage && <nav className="storyboard-planner-tabs" aria-label="分镜工作步骤">
           <UnstyledButton type="button" aria-label="规划设置" aria-current={view === 'setup' ? 'step' : undefined} onClick={() => setView('setup')}><span>1</span>规划设置</UnstyledButton><ChevronRight size={13} />
           <UnstyledButton type="button" aria-label="分镜预览" aria-current={view === 'preview' ? 'step' : undefined} disabled={!hasPreview} onClick={() => setView('preview')}><span>{hasPreview ? <Check size={11} /> : '2'}</span>分镜预览</UnstyledButton>
           <small>{planningOnly ? planIsSaved ? '分镜方案已保存' : '规划、调整镜头后保存方案' : planIsSaved ? '分镜已保存，继续准备参考设定并加入画布' : '确认后准备参考设定并加入画布'}</small>
-        </nav>
+        </nav>}
         <div key={settingsRevision} className="storyboard-planner-scroll">
           {!planningOnly && !referenceWorking && <ReferencePreparationRecovery simple snapshot={recovery.snapshot} onDiscard={() => void recovery.discard()} capabilities={recovery.capabilities} sceneCount={sceneIds.length} busy={!!pending || recovery.loading || !!imported.current} error={recovery.restoreError} reading={recovery.loading}
             activity={referenceActivity} preparing={pending === 'references'} reason={recoveryView.reason} sourceMessage={recoveryView.sourceMessage} disabledReason={recoveryView.disabledReason} adopt={recoveryView.adopt}
@@ -703,15 +746,19 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
             <header className="storyboard-planner-section-title"><h3>{planIsSaved ? '分镜已保存' : result ? '调整规划设置' : planningScenes.length ? '规划所选场次' : '所选分镜已准备好'}</h3><p>{planningOnly ? planIsSaved ? '本次镜头已保存，可返回分镜管理继续维护。' : planningScenes.length ? `${planningScenes.length} 场待规划${reusedScenes.length ? `，另有 ${reusedScenes.length} 场复用已保存分镜` : ''}。生成后可以逐镜修改，再保存方案。` : '这些镜头已保存，可返回分镜管理继续编辑，也可以重新规划。' : planIsSaved ? '本次镜头已保存，继续准备参考设定并加入画布。' : planningScenes.length ? `${planningScenes.length} 场待规划${reusedScenes.length ? `，另有 ${reusedScenes.length} 场复用已保存分镜` : ''}。生成后可以逐镜修改，再确认加入。` : '可以预览已保存镜头后直接加入，也可以重新规划。'}</p></header>
             {!!staleScenes.length && !planIsSaved && <p className="storyboard-planner-note" role="status">旧分镜和素材仍会保留，请先按最新资料重新规划{planningOnly ? '并保存方案。' : '后再加入画布。'}</p>}
             {requiresRedesign && !planIsSaved && <p className="storyboard-planner-note" role="status">{planningOnly ? '原方案的画布已删除，本次将重新设计并保存新方案。历史方案及素材保留。' : '原方案的画布已删除，本次将重新设计，确认后自动创建新画布。历史方案及素材保留。'}</p>}
-            {canChoosePlanningMode && <><Select label="规划方式" aria-label="分镜规划方式" value={reusingSavedPlan ? 'existing' : effectivePlanningMode} allowDeselect={false} disabled={locked}
-              data={[...(canReuseSavedPlan ? [{ value: 'existing', label: '复用已保存分镜', disabled: requiresRedesign }] : []),
-                { value: 'redesign', label: '重新设计新方案' }, { value: 'update', label: '沿用当前方案更新', disabled: requiresRedesign }]} comboboxProps={{ zIndex: 350 }}
-              onChange={value => void changeSettings(() => {
-                if (value === 'existing') { setReplanExisting(false); setPlanningMode('update') }
-                else if (value === 'redesign' || value === 'update') { setPlanningMode(value); setReplanExisting(true) }
-                else return
-                setDurationChoice('preserve')
-              })} />
+            {canChoosePlanningMode && <>
+              {isPage ? <section className="storyboard-mode-section" aria-label="分镜规划方式">
+                <h3>镜头规划方式</h3>
+                <div className="storyboard-mode-options">
+                  {planningModes.map(mode => <UnstyledButton className="storyboard-mode-option" key={mode.value}
+                    aria-pressed={selectedPlanningMode === mode.value} disabled={locked || mode.disabled}
+                    onClick={() => changePlanningMode(mode.value)}>
+                    <strong>{mode.label}</strong><small>{mode.description}</small>
+                  </UnstyledButton>)}
+                </div>
+              </section> : <Select label="规划方式" aria-label="分镜规划方式" value={selectedPlanningMode} allowDeselect={false} disabled={locked}
+                data={planningModes.map(({ value, label, disabled }) => ({ value, label, disabled }))} comboboxProps={{ zIndex: 350 }}
+                onChange={changePlanningMode} />}
               {!requiresRedesign && <p className="storyboard-planner-note">{planningOnly ? reusingSavedPlan ? planningScenes.length ? '保留已保存镜头，仅规划尚未完成的场次。' : '查看已保存的镜头，或切换规划方式重新设计。' : effectivePlanningMode === 'redesign' ? '将所选场次保存为新分镜方案，原方案和素材保留。' : '沿用当前方案修改镜头，确认后保存。' : reusingSavedPlan ? planningScenes.length ? '复用已保存分镜与视觉设定，仅规划尚未完成的场次。' : '复用已保存分镜与视觉设定，可以直接确认加入画布。' : effectivePlanningMode === 'redesign' ? '所选场次的镜头与视觉设定会形成新方案并进入独立画布。旧方案和素材保留，不会自动参与新方案。' : '沿用当前镜头与视觉设定更新。未变化的设定和确认图会复用。'}</p>}</>}
             {planningScenes.length > 0 && <>
               <Select label="目标视频模型（可选）" aria-label="目标视频模型" placeholder="尚未指定，使用通用制作约束" clearable
@@ -730,6 +777,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
               </section>
               <div className="storyboard-planner-settings"><Select label="文本模型" aria-label="分镜规划文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={modelId || null} allowDeselect={false} disabled={locked}
                 onChange={value => { if (value && value !== modelId) void changeSettings(() => selectModel(value)) }} comboboxProps={{ zIndex: 350 }} />
+                <TaskReasoningSelect reasoning={reasoning} disabled={locked} zIndex={350} />
                 <NumberInput label="每场建议镜头数" placeholder="自动分析" description="留空时，按各场剧情与时长自动确定" inputWrapperOrder={['label', 'input', 'description', 'error']} min={2} max={8} allowDecimal={false} value={shotsPerScene} disabled={locked} onChange={value => void changeSettings(() => setShotsPerScene(value))} /></div>
               {!eligibleModels.length && <p className="storyboard-planner-error">请先配置并启用文本模型，再开始规划。</p>}
               {context.reference_budget && <p className="storyboard-planner-reference-budget" role="note">每镜最多 {context.reference_budget.max_setting_images} 张设定参考图，另为分镜图预留 {context.reference_budget.storyboard_images} 张；视频合计不超过 {context.reference_budget.max_images} 张。对象过多时按剧情拆分镜头。</p>}
@@ -764,6 +812,10 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                 {referenceUsed && <p>实际使用：{referenceUsed.skills.join(' · ') || '基础设定规则'}{referenceUsed.assignment?.reason && <>；选择理由：{referenceUsed.assignment.reason}</>}</p>}
               </section>
               <ReferencePreparationModel working={referenceWorking} capabilities={recovery.capabilities} models={models} modelId={modelId} label="整理设定的文本模型" disabled={!!pending || guarding || !!imported.current} onChange={value => { if (value !== modelId) selectModel(value) }} />
+              <TaskReasoningSelect reasoning={reasoning} disabled={!!pending || guarding || !!imported.current} zIndex={350} />
+              {recovery.capabilities?.text_generation_options?.reasoning && recovery.capabilities.text_generation_options.reasoning !== reasoning.value &&
+                (recovery.capabilities.can_continue || recovery.capabilities.can_retry_failed) &&
+                <small>续跑档位 · {taskReasoningLabel(recovery.capabilities.text_generation_options.reasoning)}</small>}
               {!eligibleModels.length && referenceNeedsAnalysis.length > 0 && <p className="storyboard-planner-error">这些场次还需要整理参考设定，请先启用一个文本模型。</p>}
             </div>}
             <header className="storyboard-planner-section-title"><h3>{focusedScene.scene_heading}</h3><p>{focusedOutline ? `已保留大纲 ${focusedOutline.shot_count} 镜 · 镜头合计 ${focusedOutline.shot_duration_sum} 秒 / 目标 ${focusedOutline.scene_duration} 秒 · 等待继续规划` : <>{focusedScene.shots.length} 个镜头 · {focusedScene.scene_duration} 秒 · {focusedIsDraft ? awaitingReview ? '草稿已暂存，处理结束后可修改与复查' : '未保存草稿，可修改后确认' : focusedHasResult && planIsSaved ? '已保存分镜' : focusedScene.shots.length ? '复用已保存分镜' : '尚无完整分镜'}</>}</p></header>
@@ -785,7 +837,7 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
                   || result.directing_review?.status === 'review_inconclusive_needs_user' || result.directing_review?.status === 'inconclusive'
                 return <p key={index}>{context.scenes.find(scene => scene.id === item.scene_id)?.heading || '所选场次'} · 第{item.shot_index + 1}镜：{unverified ? '未核实复核意见：' : ''}{item.message}{unverified ? ' 建议：' : ` 依据：${item.evidence} 建议：`}{item.repair}</p>
               })}
-              {!planIsSaved && !awaitingReview && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>复查当前草稿</Button>}
+              {!planIsSaved && !awaitingReview && <Button variant="default" size="xs" loading={pending === 'review'} disabled={!!pending || !!planIssue(result)} onClick={() => void reviewDraft()}>{reviewDeliveryPending ? '发起新的复核' : '复查当前草稿'}</Button>}
               {!planningOnly && !planIsSaved && needsManualReview && <Button variant="light" size="xs" loading={pending === 'save'} disabled={!!pending || guarding || !!planIssue(result)} onClick={() => void savePlan()}>保存草稿，稍后复核</Button>}
               {!planIsSaved && result.directing_review.review_id && result.directing_review.status === 'needs_work' && <Button variant="light" size="xs" loading={pending === 'repair'} disabled={!!pending || !!planIssue(result) || result.directing_review.error?.code === 'storyboard_repeated_issues'} onClick={() => void reviewDraft(true)}>仅修复已确认问题</Button>}
             </div>}
@@ -824,10 +876,10 @@ export default function StoryboardPlanner({ opened, onClose, detail, models, ini
       {referenceWorking && <ReferencePreparationActivity capabilities={recovery.capabilities} activity={referenceActivity} preparing={pending === 'references'} />}
       <div className="reference-footer-primary-actions">
       {cancelUnconfirmed && <Button variant="default" disabled={cancellingTask} onClick={() => void cancelPlanning()}>重试取消</Button>}
-      {!backgroundPlanning && (pending === 'preview' || pending === 'plan') ? <Button variant="default" disabled={cancellingTask} onClick={() => void cancelPlanning()}>{cancellingTask ? '正在取消' : pending === 'preview' && context?.planning_task_version === 1 ? '停止查询' : '取消规划'}</Button> : <Button className="storyboard-planner-close-action" variant="subtle" disabled={guarding || pending === 'save'} onClick={() => void requestClose()}>{backgroundPlanning ? '关闭' : planningOnly ? '返回' : '关闭'}</Button>}
+      {!backgroundPlanning && (pending === 'preview' || pending === 'plan') ? <Button variant="default" disabled={cancellingTask} onClick={() => void cancelPlanning()}>{cancellingTask ? '正在取消' : pending === 'preview' && context?.planning_task_version === 1 ? '停止查询' : '取消规划'}</Button> : !isPage && <Button className="storyboard-planner-close-action" variant="subtle" disabled={guarding || pending === 'save'} onClick={() => void requestClose()}>{backgroundPlanning ? '关闭' : planningOnly ? '返回' : '关闭'}</Button>}
       {(planningOnly || !hasPreview) && (result || planningTask?.can_resume || error) && !planIsSaved && <Button variant="default" disabled={locked || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning(true)}>重新规划</Button>}
       {backgroundPlanning ? null : planningTask?.can_resume ? <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || taskInputRef.current?.model_id !== modelId} onClick={() => void continuePlanning()}>{planningTask.error?.code === 'storyboard_review_invalid' && planningTask.outline_checkpoint && !planningTask.candidate ? '继续恢复大纲' : '继续规划'}</Button>
-        : planningOnly && hasPreview ? result || planIsSaved ? <Button className="storyboard-planner-primary" leftSection={<Save size={14} />} disabled={!!pending || guarding || !!issue} onClick={() => void savePlan()}>{planIsSaved ? '重试刷新' : '保存分镜方案'}</Button> : <Button className="storyboard-planner-primary" disabled={!!pending || guarding} onClick={() => void requestClose()}>返回分镜管理</Button>
+        : planningOnly && hasPreview ? result || planIsSaved ? <Button className="storyboard-planner-primary" leftSection={<Save size={14} />} disabled={!!pending || guarding || !!issue} onClick={() => void savePlan()}>{planIsSaved ? '重试刷新' : '保存分镜方案'}</Button> : !isPage && <Button className="storyboard-planner-primary" disabled={!!pending || guarding} onClick={() => void requestClose()}>{returnLabel}</Button>
         : hasPreview ? referenceWorking || !!recovery.restoreError || recovery.capabilities?.state === 'unknown' && !recovery.capabilities.inspection?.can_abandon ? null : <div className="storyboard-planner-reference-actions"><ReferencePrimaryAction key={`${recovery.capabilities?.run_id}:${recoveryView.primaryAction}`} action={recoveryView.primaryAction} onAction={action => void addToCanvas(action)} className="storyboard-planner-primary" leftSection={<Plus size={14} />} disabled={!!pending || referenceReloading || referenceBlocked && !recovery.capabilities?.inspection?.can_abandon || recovery.loading || !!recovery.restoreError || !!issue || needsManualReview || !recoveryView.primaryEnabled || ['restart', 'prepare-current', 'abandon'].includes(String(recoveryView.primaryAction)) && !eligibleModels.length}>{recoveryView.primaryLabel || (recoveryView.adopt ? '加入画布' : recoveryView.retries.length ? '重试' : referenceFailures.length ? '重试' : planIsSaved ? '继续加入画布' : '加入画布')}</ReferencePrimaryAction></div>
         : /^(?:storyboard_outline_relation_correction_(?:failed|exhausted)$|structural_(?:patch_|schema_|validator_|business_|boundary_))/.test(planningTask?.error?.code || '') ? null
         : backgroundPlanning ? null : <Button className="storyboard-planner-primary" leftSection={<Clapperboard size={14} />} disabled={locked || !context || !planningIds.length || invalidTarget || invalidShotCount || !eligibleModels.some(model => model.id === modelId)} onClick={() => void startPlanning()}>{error ? '继续规划' : '开始规划'}</Button>}

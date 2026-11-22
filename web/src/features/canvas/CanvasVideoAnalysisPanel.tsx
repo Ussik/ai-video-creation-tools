@@ -1,3 +1,5 @@
+import { TaskReasoningSelect, useTaskReasoning, type ReasoningModel } from '../models/TaskReasoningSelect'
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { Alert, Badge, Button, FileButton, Loader, NumberInput, SimpleGrid, Textarea } from '@mantine/core'
 import { Check, Copy, Film, Play, Settings2, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
@@ -12,6 +14,7 @@ export type CanvasVideoAnalysisPanelProps = {
   asset?: { id: string; url: string; label?: string }
   models: { id: string; label: string }[]
   modelId: string
+  reasoningModel?: ReasoningModel
   instructions: string
   startMs: number
   endMs: number | null
@@ -31,7 +34,7 @@ export type CanvasVideoAnalysisPanelProps = {
   onFpsChange: (fps: number) => void
   onDurationChange?: (durationMs: number) => void
   onResultChange: (result: VideoPromptAnalysisResult) => void
-  onAnalyze: () => void
+  onAnalyze: (options?: TextGenerationOptions) => void
   onCancel?: () => void
   onOpenModels?: () => void
   onCreateGeneration: (shotIndex: number) => void
@@ -39,7 +42,7 @@ export type CanvasVideoAnalysisPanelProps = {
 
 const stopPropagation = (event: SyntheticEvent) => event.stopPropagation()
 
-export default function CanvasVideoAnalysisPanel({ asset, models, modelId, instructions, startMs, endMs, durationMs, fps, result,
+export default function CanvasVideoAnalysisPanel({ asset, models, modelId, reasoningModel, instructions, startMs, endMs, durationMs, fps, result,
   pending = false, uploading = false, otherPending = false, error, elapsedSeconds = 0,
   onUpload, onClearSource, onModelChange, onInstructionsChange, onRangeChange, onFpsChange, onDurationChange,
   onResultChange, onAnalyze, onCancel, onOpenModels, onCreateGeneration,
@@ -51,6 +54,7 @@ export default function CanvasVideoAnalysisPanel({ asset, models, modelId, instr
   const [copyError, setCopyError] = useState('')
   const processing = pending || uploading, busy = processing || otherPending
   const selectedModel = models.some(model => model.id === modelId)
+  const reasoning = useTaskReasoning(reasoningModel)
   const rangeIssue = videoAnalysisRangeIssue(startMs, endMs, durationMs)
   const fpsIssue = !Number.isFinite(fps) || fps < .2 || fps > 5 ? '每秒采样帧数应为 0.2–5' : ''
   const selectedIndex = Math.min(shotIndex, Math.max(0, (result?.shots.length || 1) - 1))
@@ -97,6 +101,7 @@ export default function CanvasVideoAnalysisPanel({ asset, models, modelId, instr
     <div className="pc-video-analysis-settings">
       <CanvasSelect label="视频理解模型" placeholder="选择已配置的豆包模型" data={models.map(model => ({ value: model.id, label: model.label }))}
         value={selectedModel ? modelId : null} onChange={value => { if (value) onModelChange(value) }} disabled={busy || !models.length} searchable size="sm" />
+      <TaskReasoningSelect reasoning={reasoning} disabled={busy} />
       {!models.length && <Alert className="pc-video-analysis-model-notice" color="gray" variant="light" icon={<Settings2 size={16} />}
         title="暂无可用的豆包视频理解模型">
         <div className="pc-video-analysis-model-guidance">
@@ -125,7 +130,7 @@ export default function CanvasVideoAnalysisPanel({ asset, models, modelId, instr
     <Textarea label="反推要求" description="选填，说明要重点分析的内容" placeholder="例如：重点拆解剑招、碰撞后的受力反应、环境反馈和摄影机移动"
       value={instructions} onChange={event => onInstructionsChange(event.currentTarget.value)} disabled={busy} maxLength={4000} autosize minRows={2} maxRows={5} size="sm" />
     <div className="pc-video-analysis-actions pc-video-analysis-run"><Button type="button" size="sm" leftSection={<CanvasVideoAnalysisIcon size={15} />} loading={pending}
-      disabled={busy || !asset || !selectedModel || !!rangeIssue || !!fpsIssue} onClick={onAnalyze}>{result ? '重新反推' : '开始反推'}</Button>
+      disabled={busy || !asset || !selectedModel || !!rangeIssue || !!fpsIssue} onClick={() => onAnalyze(reasoning.request.text_generation_options)}>{result ? '重新反推' : '开始反推'}</Button>
       {processing && onCancel && <Button type="button" size="sm" variant="subtle" onClick={onCancel}>{uploading ? '取消上传' : '取消反推'}</Button>}
     </div>
     {pending && <div className="pc-video-analysis-status" role="status" aria-live="polite"><Loader size={14} /><span>正在分析视频{seconds > 0 ? `，已等待 ${seconds} 秒` : '…'}{seconds >= 60 ? '，可取消后重试' : ''}</span></div>}

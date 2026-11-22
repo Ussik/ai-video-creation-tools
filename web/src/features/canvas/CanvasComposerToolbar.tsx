@@ -6,12 +6,13 @@ export interface CanvasComposerToolbarProps {
   nodeId: string
   children: ReactNode
   expanded?: boolean
+  docked?: boolean
   /** Space below the card in unscaled canvas pixels, e.g. a profile status. */
   bottomInset?: number
   onCollapse: () => void
 }
 
-export default function CanvasComposerToolbar({ nodeId, children, expanded = false, bottomInset = 0, onCollapse }: CanvasComposerToolbarProps) {
+export default function CanvasComposerToolbar({ nodeId, children, expanded = false, docked = false, bottomInset = 0, onCollapse }: CanvasComposerToolbarProps) {
   const [anchor, setAnchor] = useState<HTMLDivElement | null>(null)
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
   const returnFocusRef = useRef(false)
@@ -32,7 +33,7 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
   }, [expanded, anchor])
 
   useLayoutEffect(() => {
-    if (expanded || !anchor) return
+    if (expanded || docked || !anchor) return
     const flow = anchor.closest<HTMLElement>('.pc-flow')
     if (!flow) return
     // NodeToolbar alone owns the position. Size limits depend on the canvas
@@ -51,7 +52,7 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
       anchor.style.removeProperty('--pc-composer-max-width')
       anchor.style.removeProperty('--pc-composer-max-height')
     }
-  }, [anchor, expanded])
+  }, [anchor, expanded, docked])
 
   if (expanded) return <Modal opened onClose={onCollapse} centered withCloseButton={false}
     attributes={{ content: { 'aria-label': '创作区' } }} size="min(1120px, calc(100vw - 48px))" padding={0} radius={24} xOffset={24} yOffset={24}
@@ -75,6 +76,9 @@ export default function CanvasComposerToolbar({ nodeId, children, expanded = fal
     }}>
     {children}
   </Modal>
+
+  if (docked) return <div ref={captureAnchor} className="pc-composer-anchor pc-composer-docked nodrag nowheel"
+    data-canvas-overlay data-placement="right" onClick={event => event.stopPropagation()}>{children}</div>
 
   return <NodeToolbar nodeId={nodeId} isVisible position={Position.Bottom} offset={24 + bottomInset * zoom} align="center"
     className="pc-node-toolbar" data-canvas-overlay>

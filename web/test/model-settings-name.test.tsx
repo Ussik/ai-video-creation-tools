@@ -111,6 +111,22 @@ async function mountAdvanced(t: TestContext, modelSettings = model.settings, con
   return { container, requests, applied, errors, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
 
+test('the workbench New Model action starts a model draft for the selected provider', async t => {
+  const view = await mountProvider(t)
+  try {
+    await act(() => button('新增模型').click())
+    assert.equal(ariaInput('模型 ID 1').value, model.remote_id)
+    assert.equal(ariaInput('模型 ID 2').value, '')
+    assert.equal(button('模型选项 2').getAttribute('aria-expanded'), 'true')
+    await fillAriaInput('模型 ID 2', 'unsaved-model')
+    await act(() => button('取消', view.container.querySelector('.hp-editor')!).click())
+    assert.equal(view.container.querySelector('.hp-editor'), null)
+    assert.deepEqual(view.requests, [])
+    await act(() => button('编辑 gpt-image').click())
+    assert.equal(view.container.querySelector('input[aria-label="模型 ID 2"]'), null)
+  } finally { await view.destroy() }
+})
+
 test('renaming a provider saves the complete card once and refreshes its heading', async t => {
   const view = await mountProvider(t)
   try {

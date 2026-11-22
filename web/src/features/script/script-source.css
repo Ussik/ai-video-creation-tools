@@ -1,11 +1,46 @@
 .sd-script-source-container { margin: 0 16px 8px; }
-.sd-script-source { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.sd-script-source-open { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px; background: var(--fc-surface-muted); color: var(--fc-text-secondary); }
-.sd-script-source-open:hover { background: var(--fc-surface-hover); }
-.sd-script-source-open > svg { flex: none; }
-.sd-script-source-open > span { min-width: 0; text-align: left; }
-.sd-script-source-open strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
-.sd-script-source-open small { display: block; margin-top: 3px; color: var(--fc-text-muted); font-size: 10px; line-height: 1.5; }
+.sd-source-context .sd-script-source {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--fc-border-soft);
+  border-radius: 8px;
+  background: transparent;
+}
+.sd-source-context .sd-script-source-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fc-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.sd-source-context .sd-script-source-open:hover { background: var(--fc-surface-hover); }
+.sd-script-source-open > svg { flex: none; color: var(--fc-text-muted); }
+.sd-script-source-open > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-source-context .sd-script-source-action {
+  flex: none;
+  min-height: 28px;
+  background: transparent;
+  color: var(--fc-text-muted);
+}
+.sd-source-context .sd-script-source-action:hover:not(:disabled) {
+  background: var(--fc-surface-hover);
+  color: var(--fc-text);
+}
+.sd-source-context .sd-script-source-action:disabled { opacity: .45; }
+@media (pointer: coarse) {
+  .sd-source-context :is(.sd-script-source-open, .sd-script-source-action) { min-height: 44px; }
+  .sd-source-context .sd-script-source-action { min-width: 44px; }
+}
 .sd-source-preview-hint { margin-top: 0; font-size: 13px; color: var(--fc-text-muted); line-height: 1.7; }
 .sd-source-preview-body { max-height: 55dvh; overflow: auto; padding: 16px; border-radius: 8px; background: var(--fc-surface-muted); color: var(--fc-text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 14px; }
 .sd-source-preview-body .script-message-content :is(h1, h2, h3, h4, h5, h6) { margin: 24px 0 12px; color: var(--fc-text); font-weight: 600; line-height: 1.5; }
@@ -48,6 +83,98 @@
 .sd-analysis-details { margin-top: 8px; padding-top: 3px; border-top: 1px solid var(--fc-border-soft); }
 .sd-analysis-details > .mantine-Accordion-item > .mantine-Accordion-panel { overflow: visible; }
 .sd-analysis-details .mantine-Accordion-content, .sd-source-recovery-details .mantine-Accordion-content { padding: 6px 0 2px; }
+.sd-analysis-runtime {
+  margin-top: 8px;
+  border: 1px solid var(--fc-border-soft);
+  border-radius: 10px;
+  background: var(--fc-surface);
+}
+.sd-analysis-runtime .workspace-disclosure-control { padding-inline: 12px; }
+.sd-analysis-runtime .mantine-Accordion-content { padding: 2px 8px 8px; }
+.source-workspace-analysis .sd-analysis-runtime {
+  margin-top: 0;
+  border-inline: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.sd-analysis-runtime-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sd-analysis-runtime-steps > li {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px;
+  color: var(--fc-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.sd-analysis-runtime-steps > li:not(:last-child)::before {
+  position: absolute;
+  inset: 23px auto -7px 14px;
+  width: 1px;
+  background: var(--fc-border);
+  content: '';
+}
+.sd-runtime-marker {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  border-radius: 50%;
+  color: var(--fc-text-muted);
+  background: var(--fc-surface-muted);
+}
+.sd-runtime-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sd-runtime-duration {
+  flex: none;
+  color: var(--fc-text-muted);
+  font-size: 10px;
+  line-height: 1.85;
+  font-variant-numeric: tabular-nums;
+}
+.sd-analysis-runtime-steps > li:is([data-state="running"], [data-state="queued"]) {
+  border-radius: 6px;
+  background: var(--fc-primary-soft);
+  color: var(--fc-text);
+}
+.sd-analysis-runtime-steps > li:is([data-state="running"], [data-state="queued"]) .sd-runtime-marker {
+  background: transparent;
+  color: var(--fc-primary);
+}
+.sd-analysis-runtime-steps > li[data-state="failed"] .sd-runtime-marker {
+  background: var(--fc-danger-soft);
+  color: var(--fc-danger);
+}
+.sd-runtime-history .workspace-disclosure-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 6px;
+  color: var(--fc-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.sd-runtime-history .workspace-disclosure-control:hover { color: var(--fc-text); }
+.sd-runtime-history .sd-analysis-runtime-steps {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--fc-border-soft);
+}
+.sd-runtime-omitted { display: block; margin: 6px; color: var(--fc-text-muted); font-size: 10px; }
+@media (prefers-reduced-motion: reduce) {
+  .sd-runtime-marker > .script-director-spinner { animation: none; }
+}
 .sd-analysis-detail-group { min-width: 0; padding: 12px 0; border-bottom: 1px solid var(--fc-border-soft); }
 .sd-analysis-detail-group:first-child { padding-top: 3px; }
 .sd-analysis-detail-group:last-child { padding-bottom: 2px; border-bottom: 0; }
@@ -88,7 +215,6 @@
 .sd-source-map-original { max-height: 32dvh; overflow: auto; padding: 12px; background: var(--fc-surface-muted); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 13px; }
 @media (max-height: 700px) {
 }
-@media (max-width: 480px) { .sd-script-source { flex-wrap: wrap; } .sd-script-source-open { min-width: 180px; } }
 
 /* Extraction reuses the original analysis step layout, with no quality-review step. */
 .sd-source-analysis[data-mode="extract"] .sd-source-analysis-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -51,6 +51,7 @@ export interface StoryboardPlanningContext {
 }
 export interface StoryboardPlanningResult {
   signature: string
+  text_generation_options?: import('../models/task-reasoning.js').TextGenerationOptions
   mode?: 'redesign' | 'update'
   /** Omitted for legacy previews and plans preserving the source estimate. */
   duration_mode?: 'preserve' | 'reestimate'

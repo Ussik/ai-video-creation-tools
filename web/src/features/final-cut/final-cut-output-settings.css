@@ -1,0 +1,13 @@
+.final-cut-output-modal .mantine-Modal-content { display:flex; flex-direction:column; max-height:calc(100dvh - var(--modal-y-offset,20px) * 2); overflow:hidden; }
+.final-cut-output-modal .mantine-Modal-header { flex:none; }
+.final-cut-output-modal .mantine-Modal-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0; overflow:hidden; }
+.final-cut-output-scroll { flex:1; min-height:0; padding:22px 24px 26px; overflow:auto; overscroll-behavior:contain; }
+.final-cut-output-settings { display:grid; gap:18px; }
+.final-cut-output-settings [role="alert"] { color:var(--fc-danger); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.final-cut-output-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; flex:none; gap:10px; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+@media (max-width:480px) {
+ .final-cut-output-scroll { padding:18px; }
+ .final-cut-output-actions { padding:14px 18px; }
+ .final-cut-output-actions .mantine-Button-root { min-width:0; flex:1 1 auto; height:auto; min-height:36px; padding-block:8px; }
+ .final-cut-output-actions .mantine-Button-label { white-space:normal; line-height:1.5; }
+}

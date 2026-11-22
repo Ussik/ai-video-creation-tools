@@ -4,6 +4,7 @@ import { AlertCircle, ArrowRight } from 'lucide-react'
 import { api, json, type Model, type ProjectDetail, type ScriptCanvasCheck, type ScriptCanvasPlan, type ScriptCanvasResult } from '../../shared/api/api'
 import type { ShotManagementSnapshot } from '@video-studio/shared/storyboard/shot-management'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, taskReasoningLabel, useTaskReasoning } from '../models/TaskReasoningSelect'
 import { assertStoryboardProductionScope } from './storyboard-production'
 import { isUncertainReferenceRequest, uncertainReferenceUnits } from './reference-failure'
 import ReferencePreparationRecovery, { ReferencePrimaryAction, referenceIsWorking } from './ReferencePreparationRecovery'
@@ -40,8 +41,10 @@ export default function StoryboardProductionDialog(props: StoryboardProductionDi
   const [completedUnits, setCompletedUnits] = useState<ScriptCanvasPlan['profiles']>([])
   const [uncertain, setUncertain] = useState(false)
   const { modelId, selectModel } = useSharedModelSelection('text', eligibleModels, { locked: !!phase || !!imported.current || completed })
+  const reasoning = useTaskReasoning(eligibleModels.find(model => model.id === modelId))
   const recovery = useCanvasPreparationRecovery({ projectId, sceneIds, designId, refreshKey: JSON.stringify([modelId, [...shotIds].sort()]), paused: !!phase && phase !== 'preparing', watching: phase === 'preparing' })
   const recoveryView = referenceRecoveryView({ signature: '', scene_ids: sceneIds, profiles: completedUnits, ...recovery.plan, failed_units: failedUnits }, recovery.capabilities, modelId, recovery.snapshot?.signature)
+  const savedReasoning = recovery.capabilities?.text_generation_options?.reasoning
   useEffect(() => {
     if (recovery.plan) { setFailedUnits(recovery.plan.failed_units || []); setCompletedUnits(recovery.plan.profiles) }
     else if (recovery.capabilities?.adoption?.source_matches === false) { setFailedUnits([]); setCompletedUnits([]) }
@@ -102,7 +105,7 @@ export default function StoryboardProductionDialog(props: StoryboardProductionDi
           if (!plan) {
             if (action === 'adopt') throw new Error('待采用结果已变化，请刷新恢复状态后核对；未重新调用模型。')
             if (!eligibleModels.some(model => model.id === modelId)) throw new Error('这些镜头需要整理参考设定，请先在模型设置中启用一个文本模型。')
-            const body = action === 'prepare-current' ? await recovery.currentScopeBody(check.signature, modelId, abort.signal) : recovery.actionBody(action, check.signature, modelId)
+            const body = action === 'prepare-current' ? await recovery.currentScopeBody(check.signature, modelId, abort.signal, reasoning.request) : recovery.actionBody(action, check.signature, modelId, reasoning.request)
             referenceRequestActive = true
             referenceRequestId = body.request_id
             plan = await api<ScriptCanvasPlan>(`/projects/${projectId}/script/canvas/prepare`, { ...json('POST', body), signal: abort.signal })
@@ -173,6 +176,9 @@ export default function StoryboardProductionDialog(props: StoryboardProductionDi
     {!working && (eligibleModels.length ? <ReferencePreparationModel working={working} capabilities={recovery.capabilities} models={models} modelId={modelId}
       label="参考设定模型" disabled={!!phase || !!imported.current || completed} onChange={value => { selectModel(value); prepared.current = null }} dropdownZIndex={330} />
       : <p className="storyboard-production-help">参考设定已准备好时可直接加入；需要整理时，请先启用文本模型。</p>)}
+    {!working && <TaskReasoningSelect reasoning={reasoning} disabled={!!phase || !!imported.current || completed} zIndex={330} />}
+    {!working && savedReasoning && savedReasoning !== reasoning.value && (recovery.capabilities?.can_continue || recovery.capabilities?.can_retry_failed) &&
+      <span className="storyboard-production-help">续跑档位 · {taskReasoningLabel(savedReasoning)}</span>}
     </div>
     {!working && <div className="storyboard-production-content">
     <div className="storyboard-production-notices">

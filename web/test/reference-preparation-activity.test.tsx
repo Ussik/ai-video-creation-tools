@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import React, { act } from 'react'
 import { MantineProvider } from '@mantine/core'
-import type { CanvasPreparationRecovery } from '@video-studio/shared/api/contracts'
+import type { CanvasPreparationRecovery, CanvasPreparationSnapshot } from '@video-studio/shared/api/contracts'
 
 register(`data:text/javascript,${encodeURIComponent(`export async function load(url, context, nextLoad) { return url.endsWith('.css') ? { format: 'module', source: '', shortCircuit: true } : nextLoad(url, context) }`)}`, import.meta.url)
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
@@ -12,6 +12,7 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'Document', 'HTMLE
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: dom.window.getComputedStyle.bind(dom.window) })
 Object.defineProperty(dom.window, 'matchMedia', { value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) })
 const { default: Activity } = await import('../src/features/storyboard/ReferencePreparationActivity')
+const { default: Recovery } = await import('../src/features/storyboard/ReferencePreparationRecovery')
 const { createRoot } = await import('react-dom/client')
 after(() => dom.window.close())
 
@@ -22,6 +23,21 @@ const running = (runId: string, startedAt?: string): CanvasPreparationRecovery =
     can_cancel: true, can_abandon: false, unresolved_responses: 0, pending_requests: 1, message: '',
     progress: { label: '整理人物与道具', completed_units: 3, total_units: 5 } },
   budget: { task_requests: 4, task_max_requests: 512, run_requests: 4, run_max_requests: 256, runs: 1, max_runs: 3 },
+})
+
+test('blocked coverage shows its actionable reason without asking for another refresh', async () => {
+  const reason = '「旧站口 · 基础」对应多个同场档案。请核对本场的同名档案。'
+  const capabilities: CanvasPreparationRecovery = { ...running('partial'), state: 'partial', continue_reason: reason, inspection: undefined }
+  const snapshot: CanvasPreparationSnapshot = { signature: 'fixture', scene_ids: ['scene'], preparation: capabilities,
+    plan: { signature: 'fixture', scene_ids: ['scene'], profiles: [], status: 'partial', failed_units: [{ stage: 'coverage', unit_key: '@visual-coverage',
+      code: 'visual_coverage_identity_ambiguous', message: reason, retryable: false, recovery_type: 'blocked', checkpoint_source: 'original_raw', is_new_model_call: false, attempt: 1 }] } }
+  const container = document.body.appendChild(document.createElement('div')), root = createRoot(container)
+  try {
+    await act(() => root.render(<MantineProvider env="test"><Recovery simple capabilities={capabilities} snapshot={snapshot} sceneCount={1} busy={false}
+      onReload={() => assert.fail('settled coverage conflict cannot be cleared by refresh')} onRestart={() => assert.fail('restart is unavailable')} /></MantineProvider>))
+    assert.ok(container.querySelector('[role="alert"]')?.textContent?.includes(reason))
+    assert.equal(container.querySelector('button'), null)
+  } finally { await act(() => root.unmount()); container.remove() }
 })
 
 test('activity uses the durable start, respects local save phases and cleans up its clock', async t => {

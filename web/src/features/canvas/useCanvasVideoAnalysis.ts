@@ -1,3 +1,4 @@
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { videoAnalysisText, type VideoPromptAnalysisResult } from '@video-studio/shared/media/video-prompt-analysis'
 import { api, json, type Asset, type ProjectDetail } from '../../shared/api/api'
@@ -69,7 +70,7 @@ export function useCanvasVideoAnalysis(context: Context) {
       if (request.current === active && !active.controller.signal.aborted) error(nodeId, issue instanceof Error ? issue.message : String(issue))
     } finally { if (request.current === active) { request.current = null; setRun(null) } }
   }
-  const analyze = async (nodeId: string) => {
+  const analyze = async (nodeId: string, textGenerationOptions?: TextGenerationOptions) => {
     if (request.current) return
     const graph = latest.current.getGraph(), node = graph?.nodes.find(item => item.id === nodeId)
     if (!graph || node?.type !== 'video_analysis') return
@@ -87,7 +88,7 @@ export function useCanvasVideoAnalysis(context: Context) {
     const timeout = window.setTimeout(() => active.controller.abort(new Error('视频反推超时，请缩小分析范围后重试')), 300_000)
     try {
       const result = await api<VideoPromptAnalysisResult>(`/projects/${latest.current.detail.id}/canvas/video-prompt-analysis`, {
-        ...json('POST', { asset_id: sourceAssetId, model_id: model.id, instructions, start_ms, end_ms, fps }), signal: active.controller.signal,
+        ...json('POST', { asset_id: sourceAssetId, model_id: model.id, text_generation_options: textGenerationOptions, instructions, start_ms, end_ms, fps }), signal: active.controller.signal,
       })
       if (request.current !== active || active.controller.signal.aborted || latest.current.canvasId !== canvasId || latest.current.detail.id !== projectId) return
       if (result.asset_id !== sourceAssetId || result.model_id !== model.id || result.start_ms !== start_ms

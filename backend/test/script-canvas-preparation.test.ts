@@ -22,7 +22,7 @@ async function call(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, pa
   assert.equal(response.statusCode, 200, response.body)
   return response.json()
 }
-async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generator: (prompt: string, contract: OutputContract) => Promise<string> = async () => JSON.stringify({ profiles: [] }), rawCoverage = false) {
+async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generator: (prompt: string, contract: OutputContract) => Promise<string> = async () => JSON.stringify({ profiles: [] }), rawCoverage = false, catalog = false) {
   const project = await call('POST', '/api/projects', { name: '加入画布隔离测试' })
   const scene = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '车站', characters: '林晚', action: '拿起钥匙', episode_number: 1 })
   const other = await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '码头', episode_number: 2 })
@@ -30,13 +30,14 @@ async function setup(t: { after: (fn: () => Promise<unknown>) => void }, generat
   t.after(() => routes.close())
   let calls = 0
   registerScriptCanvasRoutes(routes, {
-    script: id => ({ ...one<{ outline: string; characters: string }>('SELECT * FROM scripts WHERE project_id=?', id)!,
+    script: id => ({ outline: '', characters: '', ...one<{ outline: string; characters: string }>('SELECT * FROM scripts WHERE project_id=?', id),
       artifacts: all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=? ORDER BY position', id),
       scenes: all<ScriptScene>('SELECT * FROM script_scenes WHERE project_id=? ORDER BY position', id) }),
     scenePrompt: scene => `${scene.heading}\n${scene.characters}\n${scene.action}`,
     generateText: async (_id, model, prompt, contract) => {
       assert.equal(model, 'mock-text'); assert.ok(contract)
-      assert.equal(contract.name, 'visual_profiles'); calls++;
+      if (!catalog) assert.equal(contract.name, 'visual_profiles')
+      calls++
       const raw = await generator(prompt, contract)
       return rawCoverage ? raw : withFixtureVisualCoverage(raw, prompt)
     },
@@ -671,6 +672,113 @@ test('declared visible objects require exact profile identity and matching image
   const saved = await f.invoke('commit', { ...base, profiles: [{ ...profile(f.scene.id), shot_usage: [{ shot_id: shot.id, usage: 'both' }] }], visual_coverage: [entry] })
   assert.equal(saved.created_profiles, 1)
   assert.equal(saved.shot_visual_bindings[0].usage, 'both')
+})
+
+test('catalog preparation and saved partial recovery use the same canonical coverage without repurchasing profiles or coverage', async t => {
+  for (const scenario of ['fresh', 'replay', 'arbitration', 'ambiguous'] as const) await t.test(scenario, async t => {
+    const historical = scenario === 'replay' || scenario === 'arbitration'
+    const ambiguous = scenario === 'ambiguous'
+    const location = '旧站口（围栏）'
+    const alias = '旧站口(围栏)'
+    const excerpt = '林晚手持钥匙站在围栏边'
+    const requests: string[] = []
+    const arbitrationShots: string[] = []
+    let catalog: Array<{ draft_key: string; kind: string; name: string; variant: string; scene_ids: string[] }> = []
+    let coverage: Array<Record<string, unknown>> = []
+    const shotIds: string[] = []
+    const fixture = await setup(t, async (prompt, contract) => {
+      requests.push(contract.name)
+      if (contract.name === 'visual_profile_catalog') return JSON.stringify({ profiles: catalog })
+      if (contract.name === 'visual_profile_content') return JSON.stringify({ definition: '依据当前镜头保持固定外观。', view_requirements: '正面及细节视图',
+        shot_usage: shotIds.map(shot_id => ({ shot_id, usage: 'both', reference_view: null })) })
+      assert.equal(contract.name, 'visual_reference_coverage')
+      const evidence = prompt.match(/本次镜头证据：(.*)\n仅需仲裁的对象家族：/)
+      if (evidence) {
+        const target = JSON.parse(evidence[1]!)
+        arbitrationShots.push(target.shot_id)
+        const ref = (field: string) => ({ ref_id: target.candidates.find((candidate: { field: string }) => candidate.field === field).ref_id })
+        assert.deepEqual(Object.keys((contract.schema as any).properties.decisions.properties), ['loc_station'])
+        return JSON.stringify({ decisions: { loc_station: { relation_to_base: 'independent',
+          image: { visible: true, evidence: ref('image_prompt') }, video: { visible: true, phase: 'throughout', evidence: ref('video_prompt') },
+          reason: '围栏在开镜和视频中持续出现。' } } })
+      }
+      return JSON.stringify({ visual_coverage: coverage })
+    }, true, true)
+    const { scene, project, invoke } = fixture
+    const scenes = [scene, fixture.other]
+    while (scenes.length < 10) scenes.push(await call('POST', `/api/projects/${project.id}/script/scenes`, { heading: '无参考空镜', episode_number: 1 }))
+    for (let index = 0; index < 5; index++) {
+      const shot = await call('POST', `/api/projects/${project.id}/shots`, { title: `镜头 ${index + 1}`, source_scene_id: scene.id,
+        image_prompt: excerpt, video_prompt: excerpt })
+      shotIds.push(shot.id)
+    }
+    catalog = [
+      { draft_key: 'loc_station', kind: 'location', name: location, variant: '基础', scene_ids: [scene.id] },
+      { draft_key: 'person_lin', kind: ambiguous ? 'location' : 'character', name: ambiguous ? '旧站口（围栏)' : '林晚', variant: '基础', scene_ids: [scene.id] },
+      { draft_key: 'prop_key', kind: 'prop', name: '钥匙', variant: '基础', scene_ids: [scene.id] },
+    ]
+    coverage = [...shotIds.map(shot_id => ({ scene_id: scene.id, shot_id, source_excerpt: excerpt, no_reference_reason: '',
+      objects: catalog.map(({ kind, name, variant }) => ({ kind, name: name === location ? historical ? '无对应目录的站口' : alias : name, variant,
+        usage: scenario === 'arbitration' && shot_id === shotIds[2] && name === location ? 'video' : 'both', requires_profile: true, reason: '该对象在首帧和视频过程均可见。' })) })),
+      ...scenes.slice(1).map(scene => ({ scene_id: scene.id, shot_id: null, source_excerpt: scene.heading, no_reference_reason: '当前空镜没有需要单独参考的主体。', objects: [] }))]
+    const scope = { scene_ids: scenes.map(scene => scene.id) }
+    const { signature } = await invoke('check', scope)
+    const input = { ...scope, signature, model_id: 'mock-text' }
+    const initial = await invoke('prepare', { ...input, request_id: randomUUID(), ...(historical ? { restart_from_run_id: 'legacy' } : {}) })
+    assert.deepEqual(requests, ['visual_profile_catalog', ...Array(3).fill('visual_profile_content'), 'visual_reference_coverage'])
+    if (ambiguous) {
+      assert.equal(initial.status, 'partial')
+      const reopened = await invoke('recovery', scope)
+      assert.equal(reopened.preparation.can_continue, false)
+      assert.equal(reopened.preparation.can_retry_failed, false)
+      assert.match(reopened.preparation.continue_reason, /对应多个同场档案/)
+      await invoke('prepare', { ...input, request_id: randomUUID(), run_id: initial.preparation.run_id, unit_keys: ['@visual-coverage'] }, 409)
+      assert.equal(requests.length, 5)
+      return
+    }
+    let result = initial
+    if (historical) {
+      assert.equal(initial.status, 'partial')
+      assert.equal(initial.profiles.length, 3)
+      const runId = initial.preparation.run_id
+      assert.notEqual(runId, 'legacy')
+      const checkpointRow = all<{ namespace: string; identity_hash: string; payload: string }>('SELECT * FROM model_unit_checkpoints WHERE project_id=?', project.id)
+        .find(row => row.namespace.startsWith('visual-profiles:') && row.namespace.endsWith(`:run:${runId}`))!
+      const checkpoint = JSON.parse(checkpointRow.payload)
+      const saved = Object.entries<any>(checkpoint.steps).find(([key]) => key.startsWith('response:coverage-v2:') && key.includes(':@visual-coverage:'))![1].value
+      saved.raw = saved.raw.replaceAll('无对应目录的站口', alias)
+      if (saved.original_raw) saved.original_raw = saved.original_raw.replaceAll('无对应目录的站口', alias)
+      const save = () => run('UPDATE model_unit_checkpoints SET payload=? WHERE project_id=? AND namespace=? AND identity_hash=?',
+        JSON.stringify(checkpoint), project.id, checkpointRow.namespace, checkpointRow.identity_hash)
+      saved.correction_started = { input_hash: 'c'.repeat(64) }
+      save()
+      const pending = await invoke('recovery', scope)
+      assert.equal(pending.preparation.can_continue, false)
+      assert.equal(pending.preparation.can_retry_failed, false)
+      await invoke('prepare', { ...input, request_id: randomUUID(), run_id: runId, unit_keys: ['@visual-coverage'] }, 409)
+      delete saved.correction_started
+      save()
+      run('UPDATE shots SET title=? WHERE id=?', '修改后的镜头', shotIds[0])
+      const changed = await invoke('recovery', scope)
+      assert.equal(changed.preparation.can_continue, false)
+      assert.equal(changed.preparation.can_retry_failed, false)
+      run('UPDATE shots SET title=? WHERE id=?', '镜头 1', shotIds[0])
+      const reopened = await invoke('recovery', scope)
+      assert.equal(reopened.preparation.can_continue, true, JSON.stringify(reopened.preparation))
+      assert.equal(reopened.preparation.can_retry_failed, false)
+      assert.deepEqual(reopened.preparation.pending_unit_keys, ['@visual-coverage'])
+      assert.equal(reopened.plan.failed_units[0].recovery.model_call, scenario === 'arbitration' ? 'possible' : 'none')
+      result = await invoke('prepare', { ...input, request_id: randomUUID(), run_id: runId, unit_keys: reopened.preparation.pending_unit_keys })
+      assert.deepEqual(result.profiles, initial.profiles)
+    }
+    assert.equal(result.status, 'complete', JSON.stringify(result.failed_units))
+    assert.deepEqual(arbitrationShots, scenario === 'arbitration' ? [shotIds[2]] : [])
+    assert.equal(requests.length, scenario === 'arbitration' ? 6 : 5)
+    assert.ok(result.visual_coverage.filter((row: any) => row.shot_id).every((row: any) => row.objects.some((object: any) => object.name === location && object.usage === 'both')))
+    const committed = await invoke('commit', { ...scope, signature, profiles: result.profiles, run_id: result.preparation.run_id,
+      reference_usage_version: 1, coverage_version: 1, visual_coverage: result.visual_coverage })
+    assert.equal(committed.created_profiles, 3)
+  })
 })
 
 test('reasoned empty shots remain valid and only explicitly covered shots keep references', async t => {

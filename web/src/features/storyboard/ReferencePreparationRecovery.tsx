@@ -56,10 +56,19 @@ export default function ReferencePreparationRecovery({ capabilities, snapshot, s
   const description = error ? '无法确认当前状态，请重试后继续。' : cancelling ? '已请求停止本地后续处理，正在核对最终状态；已发出的模型请求可能仍继续，已完成结果保留。' : working ? undefined : unknown ? '已停止自动重发，请先核对原请求结果。' : stale ? sourceMessage : adopt ? '新参考尚未采用，确认后加入画布。' : reason
   if (simple) {
     const failed = !!snapshot?.plan?.failed_units?.length || capabilities?.state === 'partial' || capabilities?.state === 'failed'
-    const canRecover = capabilities?.can_retry_failed || capabilities?.can_continue || capabilities?.can_restart_all || capabilities?.adoption?.can_prepare_current || capabilities?.inspection?.can_abandon
+    const canResume = capabilities?.can_retry_failed || capabilities?.can_continue
+    const canRecover = canResume || capabilities?.can_restart_all || capabilities?.adoption?.can_prepare_current || capabilities?.inspection?.can_abandon
     const resultTitle = error ? '暂时无法读取结果' : unknown ? '正在确认结果' : completed ? '已加入画布' : stale ? '分镜已更新' : adopt ? '已准备好，可以加入画布' : failed ? '未能加入画布' : reason ? '暂时无法加入画布' : ''
-    const message = error || unknown ? '请刷新状态后继续。' : stale ? '请重新整理参考后加入画布。' : failed ? canRecover ? (capabilities?.can_retry_failed || capabilities?.can_continue ? (capabilities?.state === 'failed' ? '模型连接中断，已有结果已保留，点击「重试」继续。' : '已有结果已保留，点击「重试」继续。') : '请重新整理后加入画布，已有结果会保留。') : '已有结果已保留，当前无法继续整理，请稍后刷新状态。' : reason && !adopt ? '请刷新状态，或选择本次使用的模型后继续。' : ''
-    return resultTitle ? <section className="reference-preparation-status" aria-label="画布准备结果"><div className="reference-run-status" role={error || failed ? 'alert' : 'status'}><strong>{resultTitle}</strong>{message && <p>{message}</p>}{(error || unknown || failed && !canRecover || !failed && !!reason && !adopt && !canRecover) && <Button variant="subtle" size="compact-xs" disabled={reading} onClick={onReload}>刷新状态</Button>}</div></section> : null
+    const coverageBlock = coverageOnly && !canResume && (capabilities?.continue_reason || reason)
+    let message = ''
+    if (error || unknown) message = '请刷新状态后继续。'
+    else if (stale) message = '请重新整理参考后加入画布。'
+    else if (coverageBlock) message = coverageBlock
+    else if (failed && canResume) message = capabilities?.state === 'failed' ? '模型连接中断，已有结果已保留，点击「重试」继续。' : '已有结果已保留，点击「重试」继续。'
+    else if (failed) message = canRecover ? '请重新整理后加入画布，已有结果会保留。' : '已有结果已保留，当前无法继续整理，请稍后刷新状态。'
+    else if (reason && !adopt) message = '请刷新状态，或选择本次使用的模型后继续。'
+    const showRefresh = error || unknown || !coverageBlock && !canRecover && (failed || !!reason && !adopt)
+    return resultTitle ? <section className="reference-preparation-status" aria-label="画布准备结果"><div className="reference-run-status" role={error || failed ? 'alert' : 'status'}><strong>{resultTitle}</strong>{message && <p>{message}</p>}{showRefresh && <Button variant="subtle" size="compact-xs" disabled={reading} onClick={onReload}>刷新状态</Button>}</div></section> : null
   }
   const retainedCount = retained.reduce((sum, item) => sum + item.plan.profiles.length, 0)
   return <section className="reference-preparation-status" aria-label="参考恢复状态">

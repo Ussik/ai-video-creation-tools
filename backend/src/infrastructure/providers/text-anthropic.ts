@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto'
 import { acquireModelChannel, modelChannelIdentity, type ModelChannelLease } from './model-channel.js'
-import { createTextTransportBoundary, textHeadersTimeoutMs, readTextErrorBody, readTextResponseBody } from './text-transport-boundary.js'
+import { createTextTransportBoundary, standardTextHeadersTimeoutMs, readTextErrorBody, readTextResponseBody } from './text-transport-boundary.js'
 import { assertTextFrameBoundary } from './text-frame-boundary.js'
 import type { GenerationModel, GenerationProvider, TextRequestMetrics, TextStreamEvent, TextStreamRequest } from './providers.js'
 import type { TextTool, ToolCall, ToolOutput, ToolTurn } from './text-tools.js'
 import { createStreamScope, generationStepBudgets, textRequestTimeoutMs, textReasoningIdleTimeoutMs, textStreamIdleTimeoutMs } from '@video-studio/shared/script/script-stream-policy'
 import { isUnrestrictedScriptExecution, modelStepSignal } from '../../modules/generation/model-execution.js'
 import { prepareTextRequest, textRequestTrace, notifyTextRequest, createTextRequestActivity } from './text-request-plan.js'
+import { currentTaskReasoning, reasoningMetrics } from './task-reasoning.js'
 import { beginTextRequest } from './text-request-usage.js'
 import { parseTextUsage, requestPurpose } from './text-usage-parse.js'
 import { TextOutputLimitError, TextProviderError, TextToolOutputLimitError, transientTextNetworkError, annotateTextFailure, textRetryAfter } from './text-errors.js'
@@ -86,7 +87,7 @@ async function requestAnthropicTextAttempt(input: Input): Promise<{ text: string
     modelId: model.id, purpose: tool ? 'tool_decision' : requestPurpose(input.request.structured_output?.name), url: input.url, headers, signal: modelStepSignal(input.signal),
     estimateBody: input.request.images?.length ? textImageCapacityBody(outgoing) : outgoing, visualInputTokens: (input.request.images?.length || 0) * 4096,
   })
-  const capacity = planned.capacity
+  const capacity = { ...planned.capacity, ...reasoningMetrics(currentTaskReasoning(model, input.provider)) }
   const cap = (planned.body as Item).max_tokens
   if (typeof cap !== 'number' || !Number.isSafeInteger(cap) || cap <= 0) throw new Error('Anthropic Messages 必须明确填写最大输出 token 数')
   const rawBody = JSON.stringify(planned.body)
@@ -106,7 +107,8 @@ async function requestAnthropicTextAttempt(input: Input): Promise<{ text: string
     idleMessage: '模型接口长时间没有返回事件，当前步骤已停止，已完成结果保留。', totalMessage: '文本模型请求超时，已保留完成步骤。',
   })
   const eventTimeout = body.thinking || body.stream === false ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs
-  const transport = createTextTransportBoundary(scope, { autoStart: false, headersMs: body.stream !== true ? textRequestTimeoutMs : eventTimeout === textReasoningIdleTimeoutMs ? eventTimeout : textHeadersTimeoutMs,
+  const transport = createTextTransportBoundary(scope, { autoStart: false,
+    headersMs: body.stream !== true ? textRequestTimeoutMs : eventTimeout === textReasoningIdleTimeoutMs ? eventTimeout : standardTextHeadersTimeoutMs(input.request.structured_output?.name),
     firstEventMs: eventTimeout, idleMs: isUnrestrictedScriptExecution() ? undefined : eventTimeout })
   let channel: ModelChannelLease | undefined
   let usage: ReturnType<typeof beginTextRequest> | undefined

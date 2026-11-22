@@ -1,9 +1,13 @@
+import { textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { recordShotProfileOrigin } from '../storyboard/shot-resource-origins.js'
 import type { ScriptCanvasResult } from '@video-studio/shared/api/contracts'
 import { generationUnitStore } from '../generation/generation-unit-store.js'
 import { reportModelResult } from '../generation/model-result-observation.js'
 import { appearanceArbitration, appearanceFamily, coverageProfileKey } from '../visuals/visual-appearance-arbitration.js'
-import { coverageHash, coverageRecoveryPolicy } from '../visuals/visual-coverage-recovery.js'
+import { coverageHash, coverageRecoveryPolicy, coverageRecoveryState } from '../visuals/visual-coverage-recovery.js'
+import { coverageUnitKey, fullCoveragePlan } from '../visuals/visual-coverage-workflow.js'
+import { assertCoverageResponseBinding, coverageReplaySeed, visualCoverageBinding } from '../visuals/visual-coverage-unit.js'
+import { createGenerationSteps } from '../script/script-generation-steps.js'
 import { completeStructuredRoot } from '../generation/structured-output.js'
 import { outputContract as coverageOutputContract } from '../generation/model-output.js'
 import { createHash } from 'node:crypto'
@@ -20,7 +24,7 @@ import { projectVisualStyle } from '../visuals/project-visual-style.js'
 import { shotImagePrompt, shotVideoPrompt } from '@video-studio/shared/storyboard/shot-prompts'
 import { assertStoryboardReferenceBudget, storyboardReferenceBudget, storyboardReferenceBudgetIssues } from '../storyboard/storyboard-reference-budget.js'
 import { skillIdsInput } from '../skills/skills.js'
-import { scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualReferenceCoverageSchema } from '../visuals/visual-reference-coverage.js'
+import { scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualCoverageDifferences, visualReferenceCoverageSchema } from '../visuals/visual-reference-coverage.js'
 
 type Context = {
   selectSkills?: CreationSkillSelector;
@@ -29,7 +33,7 @@ type Context = {
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>;
 }
 const scopeInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100), design_id: z.string().min(1).nullable().optional() }).strict()
-const planInput = scopeInput.extend({ signature: z.string().length(64), model_id: z.string().min(1).optional(), skill_ids: skillIdsInput.optional(),
+const planInput = scopeInput.extend({ signature: z.string().length(64), model_id: z.string().min(1).optional(), text_generation_options: textGenerationOptionsInput, skill_ids: skillIdsInput.optional(),
   unit_keys: z.array(z.string().min(1).max(100)).min(1).max(100).optional(), skip_unit_keys: z.array(z.string().min(1).max(100)).min(1).max(100).optional(),
   retry_unit: z.object({ unit_key: z.string().min(1).max(100), token: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
   retry_units: z.array(z.object({ unit_key: z.string().min(1).max(100), token: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(100).optional(),
@@ -164,7 +168,47 @@ function preparationRuns(id: string, sceneIds: string[], designId: string | null
     for (const [design, ids] of groups) namespaces.add('visual-profiles:' + hash([design, ids]))
   }
   return canvasPreparationRuns({ projectId: id, sceneIds, designId, signature: state.signature, namespaces: [...namespaces], shotIds: state.shots.map(shot => shot.id), prepared: !state.needsAnalysis.length,
-    coverageContext: (unit, profiles, checkpoint) => {
+    coverageContext: (unit, profiles, checkpoint, savedStepId) => {
+      if (unit.unit_key === coverageUnitKey) {
+        const scenes = state.scenes.filter(scene => unit.scene_ids?.includes(scene.id))
+        const shots = state.shots.filter(shot => scenes.some(scene => scene.id === shot.source_scene_id))
+        if (!scenes.length || scenes.length !== unit.scene_ids?.length || shots.length !== unit.shot_ids?.length
+          || shots.some(shot => !unit.shot_ids?.includes(shot.id))) return
+        const selected = profiles.filter(profile => profile.scene_ids.every(sceneId => scenes.some(scene => scene.id === sceneId)))
+        const original = selected.map(profile => {
+          if (!profile.design_id) return profile
+          const matches = Object.entries(checkpoint.steps).flatMap(([key, entry]) => {
+            const value = entry.value
+            if (!key.startsWith('unit:') || typeof value?.draft_key !== 'string' || !key.endsWith(':' + value.draft_key)) return []
+            const parsed = profileDraft.shape.profiles.element.safeParse(value)
+            if (!parsed.success || parsed.data.scene_ids.some(sceneId => !profile.scene_ids.includes(sceneId))) return []
+            const [scoped] = scopeVisualProfileDrafts(id, [parsed.data], state.sceneDesigns)
+            return scoped?.draft_key === profile.draft_key && scoped?.scene_ids.length === profile.scene_ids.length && scoped?.name === profile.name && scoped?.kind === profile.kind
+              && scoped?.variant === profile.variant ? [value as typeof profile] : []
+          })
+          return matches.length === 1 ? matches[0] : undefined
+        })
+        const rawProfiles = original.filter(profile => profile !== undefined)
+        if (rawProfiles.length !== selected.length) return
+        const plan = fullCoveragePlan({ scenes, shots, profiles: rawProfiles })
+        const binding = visualCoverageBinding(plan)
+        if (binding.stepId !== savedStepId) return
+        const saved = coverageRecoveryState(checkpoint, savedStepId)
+        const steps = createGenerationSteps({ checkpoint })
+        try {
+          assertCoverageResponseBinding(steps, binding, saved)
+          const raw = coverageReplaySeed(saved)
+          const root = raw && completeStructuredRoot(raw, { allowFenceExplanation: true })
+          if (!root) throw new Error('保留回答缺少可校验的完整覆盖说明。')
+          const { visual_coverage } = plan.validate(root.value)
+          const differences = visualCoverageDifferences(visual_coverage, scenes, shots, rawProfiles)
+          if (differences.some(difference => !difference.shot_id)) throw new Error('场次覆盖用途需要人工核对。')
+          return { ...binding, replay: differences.length ? { action: 'continue', model_call: 'possible', reason: '复用已保存覆盖回答和档案，仅核对有分歧的镜头用途。' }
+            : { action: 'continue', model_call: 'none', reason: '已有覆盖回答可在本地校验，直接复用已完成的档案。' } }
+        } catch (error) {
+          return { ...binding, replay: { action: 'inspect', model_call: saved.blocked ? 'unknown' : 'none', reason: (error as Error).message } }
+        }
+      }
       if (!unit.unit_key.startsWith('@appearance:')) return
       const shot = state.shots.find(shot => unit.unit_key === '@appearance:' + shot.id)
       const scene = shot && state.scenes.find(scene => scene.id === shot.source_scene_id)
@@ -245,6 +289,7 @@ export function registerScriptCanvasRoutes(app: FastifyInstance, context: Contex
       drafts.push(await analyzeVisualProfiles(id, {
       reuse_validated_profiles: !!data.prepare_current_from_run_id,
       retain_checkpoint: true, model_id: data.model_id || invalid('请选择文本模型，以整理缺少的视觉设定'),
+      text_generation_options: selectedRun.text_generation_options,
       scene_ids, design_id, skill_ids: data.skill_ids, inherit_scene_references: true,
       require_visual_coverage: true,
       refresh_scene_ids: [...state.refreshSceneIds].filter(sceneId => scene_ids.includes(sceneId)),

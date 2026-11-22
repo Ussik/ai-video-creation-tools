@@ -301,16 +301,20 @@ export default function CandidateCompare({ shot, assets, reviews, selectedAssetI
       候选并排比较
     </Button>
     <Modal className="candidate-compare-modal" opened={opened} onClose={() => setOpened(false)}
-      title="候选并排比较" size={1120} centered>
-      <div className="candidate-compare-intro">
-        <strong>{shot.title}</strong>
-        <span>对照两版画面、时长与审核记录。同步预览按素材的相对进度播放，声音默认静音。</span>
-      </div>
-      {candidates.length === 0 ? <div className="candidate-compare-empty">当前镜头暂无图片或视频候选。</div> : <>
-        <div className="candidate-compare-grid">
-          {renderSide('left', left, rightId)}
-          {renderSide('right', right, leftId)}
+      title="候选并排比较" size="min(1180px, calc(100vw - 32px))" centered>
+      <div className="candidate-compare-scroll">
+        <div className="candidate-compare-intro">
+          <strong>{shot.title}</strong>
+          <span>对照两版画面、时长与审核记录。同步预览按素材的相对进度播放，声音默认静音。</span>
         </div>
+        {candidates.length === 0 ? <div className="candidate-compare-empty">当前镜头暂无图片或视频候选。</div> : <>
+          <div className="candidate-compare-grid">
+            {renderSide('left', left, rightId)}
+            {renderSide('right', right, leftId)}
+          </div>
+        </>}
+      </div>
+      {candidates.length > 0 && <footer className="candidate-compare-footer">
         <div className="candidate-compare-transport">
           <Button variant="light" color="studio" size="xs" onClick={() => void togglePlayback()}
             disabled={!allVideoDurationsReady || !!hasMediaError}
@@ -330,7 +334,7 @@ export default function CandidateCompare({ shot, assets, reviews, selectedAssetI
         {metadataFailed && <Button variant="subtle" size="xs" onClick={() => setMetadataRetry((current) => current + 1)}
           leftSection={<RefreshCcw size={14} />}>重试读取视频时长</Button>}
         {playbackError && <div className="candidate-compare-playback-error" role="alert"><TriangleAlert size={16} />{playbackError}</div>}
-      </>}
+      </footer>}
     </Modal>
   </>
 }

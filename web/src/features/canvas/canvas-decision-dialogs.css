@@ -1,0 +1,32 @@
+.pc-prompt-fixed-dialog .mantine-Modal-content,
+.pc-prompt-source-dialog .mantine-Modal-content,
+.pc-prompt-full-dialog .mantine-Modal-content,
+.pc-source-diff-modal .mantine-Modal-content,
+.pc-video-conflict-modal .mantine-Modal-content { display:flex; flex-direction:column; max-height:calc(100dvh - var(--modal-y-offset,20px) * 2); overflow:hidden; }
+.pc-prompt-fixed-dialog .mantine-Modal-header,
+.pc-prompt-source-dialog .mantine-Modal-header,
+.pc-prompt-full-dialog .mantine-Modal-header,
+.pc-source-diff-modal .mantine-Modal-header,
+.pc-video-conflict-modal .mantine-Modal-header { flex:none; }
+.pc-prompt-fixed-dialog .mantine-Modal-body,
+.pc-prompt-source-dialog .mantine-Modal-body,
+.pc-prompt-full-dialog .mantine-Modal-body,
+.pc-source-diff-modal .mantine-Modal-body,
+.pc-video-conflict-modal .mantine-Modal-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0; overflow:hidden; }
+.pc-decision-dialog-scroll { flex:1; min-height:0; padding:22px 24px 26px; overflow:auto; overscroll-behavior:contain; }
+.pc-decision-dialog-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; flex:none; gap:10px; margin:0; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+.pc-decision-dialog-actions > .mantine-Group-root { min-width:0; }
+@media (max-width:600px) {
+ .pc-decision-dialog-scroll { padding:18px; }
+ .pc-decision-dialog-actions { padding:14px 18px; }
+ .pc-decision-dialog-actions .mantine-Button-root { min-width:0; flex:1 1 auto; height:auto; min-height:36px; padding-block:8px; }
+ .pc-decision-dialog-actions .mantine-Button-label { white-space:normal; line-height:1.5; }
+}
+
+.pc-prompt-fixed-dialog .pc-prompt-fixed-dialog-footer,
+.pc-prompt-source-dialog .pc-prompt-source-dialog-footer { margin:0; padding:16px 24px; }
+.pc-prompt-fixed-dialog-footer > .mantine-Text-root { margin-right:auto; }
+@media (max-width:600px) {
+ .pc-prompt-fixed-dialog .pc-prompt-fixed-dialog-footer,
+ .pc-prompt-source-dialog .pc-prompt-source-dialog-footer { padding:14px 18px; }
+}

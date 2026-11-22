@@ -1,5 +1,6 @@
 import type { ScriptSourceKnowledge, ScriptSourceKnowledgePending } from './script-source-knowledge.js'
 import type { SourcePositionIndex } from './script-source-position-index.js'
+import type { TextGenerationOptions } from '../models/task-reasoning.js'
 export type ScriptSourceQuote = { offset: number; quote: string }
 /** Primary fact support; characters may cite earlier identity facts only with
  * separate chapter-local occurrence. Supporting quotes retain the full chain. */
@@ -88,6 +89,7 @@ export type ScriptSourceControlledRecoveryScope = {
   predecessor?: { run_id: string; authorization_id: string; evidence_hash: string }
 }
 export type ScriptSourceAnalysis = {
+  text_generation_options?: TextGenerationOptions
   /** Extraction ends after indexing and synthesis, without semantic quality loops. */
   /** Private syntax-only audit; does not certify source facts or references. */
   syntax_repairs?: Array<{ page: number; input_hash: string; correction_input_hash?: string; correction_raw?: string;

@@ -1,3 +1,4 @@
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Checkbox, Select, Stack, Text } from '@mantine/core'
 import { ScanEye, TriangleAlert } from 'lucide-react'
@@ -18,6 +19,7 @@ export default function CanvasVideoContinuityCheck({ detail, request, models, pr
   const [modelId, setModelId] = useState(available[0]?.id || '')
   const selected = available.find(item => item.id === modelId)
   const defaultModelId = available[0]?.id || ''
+  const reasoning = useTaskReasoning(selected)
   useEffect(() => { if (!selected) setModelId(defaultModelId) }, [selected?.id, defaultModelId])
   const [includeFrames, setIncludeFrames] = useState(false), [running, setRunning] = useState(false), [error, setError] = useState('')
   const source = canvasContinuitySource(detail, request, modifyAudio)
@@ -38,7 +40,7 @@ export default function CanvasVideoContinuityCheck({ detail, request, models, pr
     setRunning(true); setError('')
     try {
       const report = await api<VideoContinuityReview>(`/projects/${detail.id}/canvas/video-continuity-review`, {
-        ...json('POST', { model_id: selected.id, shot_id: request.shot_id || null, target_model_id: request.model_id,
+        ...json('POST', { model_id: selected.id, ...reasoning.request, shot_id: request.shot_id || null, target_model_id: request.model_id,
           prompt: request.prompt, generation_duration: request.duration, source_signature: sourceSignature,
           mode: request.mode, generate_audio: request.generate_audio,
           storyboard_asset_id: source.storyboardId, include_frames: includeFrames && selected.settings.supports_vision === true,
@@ -57,6 +59,7 @@ export default function CanvasVideoContinuityCheck({ detail, request, models, pr
     {source.context.previous && !previousFrame && <Text size="xs" c="dimmed">前镜尚无有效选用素材与取段，本次可先核对文字设计。</Text>}
     <Select label="核对模型" data={available.map(item => ({ value: item.id, label: item.name }))} value={selected?.id || null}
       onChange={value => setModelId(value || '')} disabled={disabled || running} searchable size="xs" />
+    <TaskReasoningSelect reasoning={reasoning} disabled={disabled || running} />
     <Checkbox size="xs" label="同时核对前镜实际尾帧与本镜参考图" checked={includeFrames}
       disabled={disabled || running || selected?.settings.supports_vision !== true}
       onChange={event => setIncludeFrames(event.currentTarget.checked)} />

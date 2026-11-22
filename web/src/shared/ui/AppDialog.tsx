@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react'
 import { Button, Modal, Text, TextInput } from '@mantine/core'
-import { TriangleAlert } from 'lucide-react'
+import { CircleHelp, PencilLine, TriangleAlert } from 'lucide-react'
 
 type BaseOptions = {
   title: string
@@ -50,35 +50,40 @@ export function useAppDialog(options: { zIndex?: number } = {}) {
     })
   }, [])
 
+  const DialogIcon = request?.danger ? TriangleAlert : request?.kind === 'prompt' ? PencilLine : CircleHelp
   const dialog = request ? <Modal
     opened
     zIndex={options.zIndex}
     onClose={() => finish(request.kind === 'prompt' ? null : false)}
     centered
     size={request.size || 'sm'}
+    title={<span className="app-dialog-heading"><span className="app-dialog-icon" aria-hidden="true"><DialogIcon size={19} /></span><span>{request.title}</span></span>}
     withCloseButton={false}
     closeOnClickOutside={false}
-    classNames={{ content: `app-dialog${request.scrollable ? ' app-dialog-bounded' : ''}`, body: 'app-dialog-body' }}
+    classNames={{ content: `app-dialog app-dialog-${request.danger ? 'danger' : request.kind}${request.scrollable ? ' app-dialog-bounded' : ''}`, header: 'app-dialog-header', body: 'app-dialog-body' }}
     aria-label={request.title}
   >
-    <div className="app-dialog-copy">
-      <div className="app-dialog-title">
-        <div className="app-dialog-icon" aria-hidden="true"><TriangleAlert size={19} /></div>
-        <h2>{request.title}</h2>
+    <div className="app-dialog-scroll-region">
+      <div className="app-dialog-copy">
+        <Text component="p">{request.message}</Text>
+        {request.details}
       </div>
-      <Text component="p">{request.message}</Text>
-      {request.details}
+      {request.kind === 'prompt' && <TextInput
+        autoFocus
+        value={value}
+        placeholder={request.placeholder}
+        aria-label={request.title}
+        onChange={(event) => setValue(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            event.preventDefault()
+            if (value.trim()) finish(value.trim())
+          }
+        }}
+      />}
     </div>
-    {request.kind === 'prompt' && <TextInput
-      autoFocus
-      value={value}
-      placeholder={request.placeholder}
-      aria-label={request.title}
-      onChange={(event) => setValue(event.currentTarget.value)}
-      onKeyDown={(event) => { if (event.key === 'Enter') finish(value.trim()) }}
-    />}
     <div className="app-dialog-actions">
-      <Button variant="default" onClick={() => finish(request.kind === 'prompt' ? null : false)}>{request.cancelLabel || '取消'}</Button>
+      <Button variant="subtle" onClick={() => finish(request.kind === 'prompt' ? null : false)}>{request.cancelLabel || '取消'}</Button>
       <Button color={request.danger ? 'red' : undefined} onClick={() => finish(request.kind === 'prompt' ? value.trim() : true)} disabled={request.kind === 'prompt' && !value.trim()}>
         {request.confirmLabel || (request.kind === 'prompt' ? '保存' : '确认')}
       </Button>

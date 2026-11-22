@@ -35,11 +35,11 @@ function mockPlanningFetch(t: TestContext, handler: typeof fetch, explicitReview
   return t.mock.method(globalThis, 'fetch', async (url, init) => String(url).endsWith('/canvas/recovery') ? Response.json({ signature, scene_ids: ['scene'] }) : String(url).endsWith('/storyboard/preview')
     ? Response.json({ preview: null }) : !explicitReview && String(url).endsWith('/storyboard/review') ? Response.json(acceptedReview) : handler(url, init))
 }
-async function mount(options: { refresh?: () => Promise<unknown>; openCanvas?: () => void; close?: () => void; project?: ProjectDetail; initialSceneIds?: string[]; models?: Model[]; intent?: 'plan' | 'canvas'; notice?: (message: string) => void; saved?: (result: ScriptCanvasResult) => void | Promise<void> } = {}) {
+async function mount(options: { refresh?: () => Promise<unknown>; openCanvas?: () => void; close?: () => void; project?: ProjectDetail; initialSceneIds?: string[]; models?: Model[]; intent?: 'plan' | 'canvas'; presentation?: 'page'; returnLabel?: string; notice?: (message: string) => void; saved?: (result: ScriptCanvasResult) => void | Promise<void> } = {}) {
   dom.window.sessionStorage.clear()
   const container = document.createElement('div'); document.body.append(container); const root = createRoot(container)
   const render = async (opened = true) => act(async () => root.render(<MantineProvider env="test"><StoryboardPlanner opened={opened} onClose={options.close || (() => {})}
-    intent={options.intent} onSaved={options.saved} detail={options.project || detail} models={options.models || models} initialSceneIds={options.initialSceneIds || ['scene']} onRefresh={options.refresh || (async () => {})} onOpenCanvas={options.openCanvas || (() => {})} onNotice={options.notice || (() => {})} /></MantineProvider>))
+    intent={options.intent} presentation={options.presentation} returnLabel={options.returnLabel} onSaved={options.saved} detail={options.project || detail} models={options.models || models} initialSceneIds={options.initialSceneIds || ['scene']} onRefresh={options.refresh || (async () => {})} onOpenCanvas={options.openCanvas || (() => {})} onNotice={options.notice || (() => {})} /></MantineProvider>))
   await render()
   return { render, destroy: async () => { await act(() => root.unmount()); container.remove() } }
 }
@@ -1298,6 +1298,28 @@ test('independent saved plans return to management without manufacturing a draft
   } finally { await view.destroy() }
 })
 
+test('the planner page switches steps with one current step and returns to its caller', async t => {
+  let closed = 0
+  mockPlanningFetch(t, async url => {
+    if (String(url).endsWith('/context')) return Response.json(context)
+    throw new Error(`Unexpected ${url}`)
+  })
+  const view = await mount({ presentation: 'page', intent: 'plan', returnLabel: '返回剧本', close: () => closed++ })
+  try {
+    const stepper = document.querySelector('[aria-label="分镜规划步骤"]')!
+    const currentStep = () => [...stepper.querySelectorAll('[aria-current="step"]')].map(step => step.textContent)
+    assert.deepEqual(currentStep(), ['02生成计划'])
+    assert.equal(button('03预览确认').disabled, true)
+    await act(async () => button('01选择内容').click())
+    assert.deepEqual(currentStep(), ['01选择内容'])
+    assert.equal(document.activeElement?.getAttribute('aria-label'), `选择场次：${scene.heading}`)
+    await act(async () => button('02生成计划').click())
+    assert.deepEqual(currentStep(), ['02生成计划'])
+    await act(async () => button('返回剧本').click())
+    assert.equal(closed, 1)
+  } finally { await view.destroy() }
+})
+
 test('independent drafts confirm before close and before changing planning settings', async t => {
   let closed = 0, plans = 0
   mockPlanningFetch(t, async url => {
@@ -1664,6 +1686,31 @@ test('a complete no-action inconclusive candidate can be saved and edits still r
     assert.equal(button('保存分镜方案').disabled, false)
     await fillTextarea('镜头描述', '完整候选人工修改'); assert.equal(button('保存分镜方案').disabled, true)
     await act(async () => button('复查当前草稿').click()); assert.equal(reviews, 1)
+    assert.equal(button('保存分镜方案').disabled, false)
+  } finally { await view.destroy() }
+})
+
+test('unconfirmed director review requires consent before starting another model request', async t => {
+  let reviews = 0
+  mockPlanningFetch(t, async url => {
+    const path = String(url)
+    if (path.endsWith('/context')) return Response.json(context)
+    if (path.endsWith('/plan')) return Response.json({ ...draft, directing_review: { status: 'review_inconclusive_no_action', review_id: 'pending-review',
+      repaired: false, issues: [], error: { code: 'structured_initial_delivery_pending', message: '导演复核尚未收到结果' } } })
+    if (path.endsWith('/review')) { reviews++; return Response.json(acceptedReview) }
+    throw new Error(`Unexpected ${url}`)
+  }, true)
+  const view = await mount({ intent: 'plan' })
+  try {
+    await act(async () => button('开始规划').click())
+    assert.equal(button('保存分镜方案').disabled, false)
+    await act(async () => button('发起新的复核').click())
+    assert.match(document.body.textContent!, /可能产生额外用量/)
+    await act(async () => button('返回草稿').click())
+    assert.equal(reviews, 0)
+    await act(async () => button('发起新的复核').click())
+    await act(async () => button('发起新复核').click())
+    assert.equal(reviews, 1)
     assert.equal(button('保存分镜方案').disabled, false)
   } finally { await view.destroy() }
 })

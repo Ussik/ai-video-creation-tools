@@ -16,6 +16,20 @@ export type CoverageProfile = { kind: string; name: string; variant: string; sce
   draft_key?: string; id?: string; base_draft_key?: string | null; base_profile_id?: string | null; state_delta?: string;
   shot_usage?: Array<{ shot_id: string; usage: string }> }
 const identity = (profile: Pick<CoverageProfile, 'kind' | 'name' | 'variant'>) => JSON.stringify([profile.kind, profile.name, profile.variant])
+const parentheses = (name: string) => name.replace(/[（）]/g, character => character === '（' ? '(' : ')')
+
+export function canonicalizeCoverageObjects(coverage: ReferenceCoverage, profiles: CoverageProfile[]): ReferenceCoverage {
+  return coverage.map(item => ({ ...item, objects: item.objects.map(object => {
+    const candidates = profiles.filter(profile => profile.scene_ids.includes(item.scene_id)
+      && profile.kind === object.kind && profile.variant === object.variant)
+    const exact = candidates.filter(profile => identity(profile) === identity(object))
+    const matches = exact.length ? exact : candidates.filter(profile => parentheses(profile.name) === parentheses(object.name))
+    if (matches.length > 1) throw Object.assign(new Error(`「${object.name} · ${object.variant}」对应多个同场档案。请核对本场的同名档案。`), {
+      code: 'visual_coverage_identity_ambiguous', statusCode: 422,
+    })
+    return matches.length ? { ...object, name: matches[0]!.name } : object
+  }) }))
+}
 const modes = (usage: string) => usage === 'both' ? ['image', 'video'] : usage === 'none' ? [] : [usage]
 function invalid(message: string): never { throw Object.assign(new Error(message), { statusCode: 422 }) }
 

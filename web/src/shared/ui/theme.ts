@@ -5,6 +5,7 @@ import {
   Checkbox,
   Combobox,
   createTheme,
+  Drawer,
   Modal,
   MultiSelect,
   NumberInput,
@@ -17,19 +18,19 @@ import {
   TextInput,
 } from '@mantine/core'
 
-const fontFamily = '"SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
+const fontFamily = '"Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
 
 const inputStyles = {
   input: {
-    backgroundColor: 'var(--fc-surface)',
+    backgroundColor: 'var(--fc-canvas)',
     borderColor: 'var(--fc-border)',
     color: 'var(--fc-text)',
     fontSize: '13px',
   },
   label: {
-    color: 'var(--fc-text-muted)',
+    color: 'var(--fc-text-secondary)',
     fontSize: '12px',
-    fontWeight: 500,
+    fontWeight: 400,
     marginBottom: '5px',
   },
   description: {
@@ -121,8 +122,11 @@ export const theme = createTheme({
   },
   components: {
     ActionIcon: ActionIcon.extend({
-      defaultProps: { radius: 'sm', variant: 'subtle' },
-      styles: { root: { transition: 'background-color 150ms, color 150ms' } },
+      defaultProps: { radius: 7, variant: 'subtle' },
+      classNames: (_theme, props) => ({
+        root: !props.color || props.color === 'studio' ? 'app-action-icon app-action-icon-neutral' : 'app-action-icon',
+      }),
+      styles: { root: { transition: 'background-color 220ms var(--fc-ease), border-color 220ms var(--fc-ease), color 220ms var(--fc-ease), box-shadow 220ms var(--fc-ease)' } },
     }),
     Badge: Badge.extend({
       defaultProps: { radius: 'xs', variant: 'light', size: 'sm' },
@@ -130,6 +134,9 @@ export const theme = createTheme({
     }),
     Button: Button.extend({
       defaultProps: { radius: 'md', size: 'sm' },
+      classNames: (_theme, props) => ({
+        root: !props.color || props.color === 'studio' ? 'app-button app-button-studio' : 'app-button',
+      }),
       vars: (_theme, props) => !props.color || props.color === 'studio' ? {
         root: props.variant === 'filled' || !props.variant ? {
           '--button-bg': 'var(--fc-action)',
@@ -138,8 +145,7 @@ export const theme = createTheme({
         } : {},
       } : { root: {} },
       styles: {
-        root: { fontWeight: 500, transition: 'background-color 150ms, border-color 150ms, color 150ms' },
-        label: { whiteSpace: 'nowrap' },
+        root: { fontWeight: 500, transition: 'background-color 220ms var(--fc-ease), border-color 220ms var(--fc-ease), color 220ms var(--fc-ease), box-shadow 220ms var(--fc-ease)' },
       },
     }),
     Checkbox: Checkbox.extend({
@@ -152,20 +158,28 @@ export const theme = createTheme({
       } : { root: {} },
     }),
     Combobox: Combobox.extend({
-      defaultProps: { radius: 12, dropdownPadding: 6, offset: 6 },
+      defaultProps: { radius: 10, dropdownPadding: 6, offset: 6 },
       classNames: dropdownClassNames,
     }),
     Modal: Modal.extend({
       defaultProps: {
         centered: true,
-        radius: 'lg',
-        overlayProps: { backgroundOpacity: 0.45, blur: 4 },
-        transitionProps: { transition: 'fade', duration: 140 },
+        radius: 14,
+        overlayProps: { backgroundOpacity: 0.52, blur: 5 },
+        transitionProps: { transition: 'fade-up', duration: 200 },
       },
       styles: {
-        content: { border: '1px solid var(--fc-border-soft)', boxShadow: 'var(--fc-modal-shadow)' },
-        header: { borderBottom: '1px solid var(--fc-border-soft)', padding: '18px 20px' },
-        title: { color: 'var(--fc-text)', fontSize: '16px', fontWeight: 600 },
+        content: { border: '1px solid var(--fc-border)', boxShadow: 'var(--fc-modal-shadow)' },
+        header: { borderBottom: '1px solid var(--fc-border-soft)', padding: '20px 24px' },
+        title: { color: 'var(--fc-text)', fontSize: '17px', fontWeight: 500 },
+      },
+    }),
+    Drawer: Drawer.extend({
+      defaultProps: { overlayProps: { backgroundOpacity: 0.45, blur: 4 } },
+      styles: {
+        content: { backgroundColor: 'var(--fc-panel)', color: 'var(--fc-text)', boxShadow: 'var(--fc-modal-shadow)' },
+        header: { backgroundColor: 'var(--fc-panel)', borderBottom: '1px solid var(--fc-border-soft)' },
+        title: { color: 'var(--fc-text)', fontSize: '17px', fontWeight: 500 },
       },
     }),
     NumberInput: NumberInput.extend({ defaultProps: { radius: 'sm', size: 'sm' }, styles: inputStyles }),

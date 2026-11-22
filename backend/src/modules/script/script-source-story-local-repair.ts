@@ -39,19 +39,38 @@ export function storyPartLocalRepair(schema: z.ZodType, sectionCount: number, ev
           targets.set(`${field}_${index}`, { key: `${field}_${index}`, path: [field, index], schema: fieldSchema.element as z.ZodType })
       })
     }
-    const evidenceIssue = (failure.error as { sourceEvidenceIssue?: { character_name: string } } | undefined)?.sourceEvidenceIssue
-    if (evidenceIssue && Array.isArray(input.characters) && schema.shape.characters instanceof z.ZodArray) {
-      const at = input.characters.findIndex(item => item?.name === evidenceIssue.character_name)
+    const evidenceIssue = (failure.error as { sourceEvidenceIssue?: unknown } | undefined)?.sourceEvidenceIssue
+    if (evidenceIssue && typeof evidenceIssue === 'object' && 'character_name' in evidenceIssue && Array.isArray(input.characters) && schema.shape.characters instanceof z.ZodArray) {
+      const at = input.characters.findIndex(item => item?.name === (evidenceIssue as { character_name: string }).character_name)
       if (at >= 0) targets.set(`characters_${at}`, { key: `characters_${at}`, path: ['characters', at], schema: schema.shape.characters.element as z.ZodType })
     }
-    const fieldPath = (failure.error as { field_path?: string } | undefined)?.field_path
-    const indexed = fieldPath?.match(/^([a-z_]+)\[(\d+)\]/)
-    if (indexed && Array.isArray(input[indexed[1]!]) && schema.shape[indexed[1]!] instanceof z.ZodArray) {
-      const field = indexed[1]!, at = Number(indexed[2]); if (at < (input[field] as unknown[]).length) targets.set(`${field}_${at}`, { key: `${field}_${at}`, path: [field, at], schema: schema.shape[field].element as z.ZodType })
+    const rangeIssue = (failure.error as { sourceEvidenceRangeIssue?: { field: string; indices: number[] } } | undefined)?.sourceEvidenceRangeIssue
+    if (rangeIssue && Array.isArray(input[rangeIssue.field]) && schema.shape[rangeIssue.field] instanceof z.ZodArray) {
+      rangeIssue.indices.forEach(at => {
+        if (at >= 0 && at < (input[rangeIssue.field] as unknown[]).length) {
+          targets.set(`${rangeIssue.field}_${at}`, { key: `${rangeIssue.field}_${at}`, path: [rangeIssue.field, at], schema: schema.shape[rangeIssue.field].element as z.ZodType })
+        }
+      })
+    }
+    const scopeIssue = (failure.error as { sourceScopeIssue?: { field: string; indices: number[] } } | undefined)?.sourceScopeIssue
+    if (scopeIssue && Array.isArray(input[scopeIssue.field]) && schema.shape[scopeIssue.field] instanceof z.ZodArray) {
+      scopeIssue.indices.forEach(at => {
+        if (at >= 0 && at < (input[scopeIssue.field] as unknown[]).length) {
+          targets.set(`${scopeIssue.field}_${at}`, { key: `${scopeIssue.field}_${at}`, path: [scopeIssue.field, at], schema: schema.shape[scopeIssue.field].element as z.ZodType })
+        }
+      })
     }
     if (!targets.size || targets.size > 200) return
-    return fixedLocalRepair({ candidate, targets: [...targets.values()], prompt: JSON.stringify({
-      targets: [...targets.values()].map(t => ({ key: t.key, value: t.path.reduce<any>((v, key) => v[key], input) })), evidence,
-      constraints: '只纠正固定字段/引用，保留原事实、否定和前提，不删除事实或补写剧情。资料不足则停止。' }) })
+    const promptData: { targets: unknown[]; evidence: unknown; constraints: string; validation_errors?: unknown[] } = {
+      targets: [...targets.values()].map(t => ({ key: t.key, value: t.path.reduce<any>((v, key) => v[key], input) })),
+      evidence,
+      constraints: '只纠正固定字段/引用，保留原事实、否定和前提，不删除事实或补写剧情。资料不足则停止。'
+    }
+    const errors: unknown[] = []
+    if (evidenceIssue) errors.push({ type: 'character_evidence', ...evidenceIssue })
+    if (rangeIssue) errors.push({ type: 'evidence_out_of_range', ...rangeIssue })
+    if (scopeIssue) errors.push({ type: 'scope_ambiguous', ...scopeIssue })
+    if (errors.length) promptData.validation_errors = errors
+    return fixedLocalRepair({ candidate, targets: [...targets.values()], prompt: JSON.stringify(promptData) })
   }
 }

@@ -564,3 +564,660 @@
   .script-director-settings-grid .script-director-auto-card,
   .script-director-settings-grid .script-director-structure-card { transition: none; }
 }
+
+/* Script Atelier modal composition */
+.script-director-settings-modal.mantine-Modal-content {
+  width: min(1240px, calc(100vw - 28px));
+  max-height: calc(100dvh - 28px);
+  overflow: hidden;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: var(--fc-panel);
+  box-shadow: var(--fc-modal-shadow);
+}
+.script-director-settings-modal-body.mantine-Modal-body {
+  display: grid;
+  grid-template-columns: 17.6% minmax(0, 1fr) 20.5%;
+  height: min(748px, calc(100dvh - 20px));
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--fc-canvas);
+}
+.script-director-settings-modal-header {
+  position: absolute;
+  z-index: 8;
+  top: 12px;
+  right: 14px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.script-director-settings-modal-header .mantine-Modal-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.script-director-settings-modal-header .mantine-Modal-close {
+  pointer-events: auto;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--fc-border);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fc-surface) 88%, transparent);
+  color: var(--fc-text-secondary);
+  box-shadow: 0 4px 14px #10182018;
+}
+.script-director-settings-modal-header .mantine-Modal-close:hover {
+  background: var(--fc-surface-hover);
+  color: var(--fc-text);
+}
+.script-director-settings-modal {
+  font-size: 15px;
+}
+.script-director-settings-modal .script-director-settings-scroll {
+  font-size: 15px;
+}
+.script-director-settings-modal .script-director-settings-scroll :is(label, .mantine-InputWrapper-label, .mantine-InputWrapper-description) {
+  font-size: 14px;
+}
+.script-director-settings-modal .script-director-settings-scroll :is(input, textarea, .mantine-Select-input, .mantine-NumberInput-input) {
+  min-height: 42px;
+  font-size: 15px;
+}
+.script-director-settings-modal .script-director-setting-heading small,
+.script-director-settings-modal .script-director-structure-label,
+.script-director-settings-modal .script-director-settings-path-item small {
+  font-size: 13px;
+}
+.script-director-settings-modal .script-director-setting-value,
+.script-director-settings-modal .script-director-settings-grid .script-director-structure-value {
+  font-size: 15px;
+}
+.script-director-settings-modal .script-director-settings-modal-foot {
+  font-size: 14px;
+}
+.script-director-settings-modal .script-director-settings-modal-foot :is(.script-director-settings-cancel, .script-director-settings-confirm) {
+  min-height: 42px;
+  padding-inline: 18px;
+  font-size: 14px;
+}
+.script-director-settings-modal.is-presets-hidden .script-director-settings-modal-body {
+  grid-template-columns: 17.6% minmax(0, 1fr) 20.5%;
+}
+.script-director-settings-presets {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 20px 15px;
+  border: 0;
+  border-right: 1px solid var(--fc-border);
+  border-radius: 0;
+  background: var(--fc-surface);
+}
+.script-director-settings-path {
+  display: grid;
+  flex: none;
+  gap: 0;
+}
+.script-director-settings-path-item {
+  position: relative;
+  display: grid;
+  width: 100%;
+  grid-template-columns: 29px minmax(0, 1fr);
+  min-height: 61px;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 4px 7px 0;
+  border: 0;
+  border-bottom: 1px solid var(--fc-border-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--fc-text-muted);
+  text-align: left;
+}
+.script-director-settings-path-item::before {
+  position: absolute;
+  inset: 9px auto 9px -20px;
+  width: 2px;
+  background: transparent;
+  content: "";
+}
+.script-director-settings-path-item[aria-current],
+.script-director-settings-path-item:hover {
+  color: var(--fc-text);
+  background: transparent;
+}
+.script-director-settings-path-item[aria-current]::before {
+  background: var(--fc-primary);
+}
+.script-director-settings-path-item > b {
+  color: var(--fc-text-subtle);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 400;
+}
+.script-director-settings-path-item[aria-current] > b {
+  color: var(--fc-primary);
+}
+.script-director-settings-path-item span {
+  display: block;
+  min-width: 0;
+}
+.script-director-settings-path-item strong,
+.script-director-settings-path-item small {
+  display: block;
+}
+.script-director-settings-path-item strong {
+  font-family: "Songti SC", "STSong", serif;
+  font-size: 12px;
+  font-weight: 500;
+}
+.script-director-settings-path-item small {
+  margin-top: 3px;
+  color: var(--fc-text-subtle);
+  font-size: 9px;
+}
+.script-director-settings-inspiration {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding-top: 20px;
+  border-top: 1px solid var(--fc-border-soft);
+}
+.script-director-settings-inspiration-label {
+  color: var(--fc-text-subtle);
+  font-size: 8px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.atelier-preset-list {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
+  gap: 0;
+  overflow: auto;
+  margin-top: 9px;
+  padding-right: 2px;
+  scrollbar-color: var(--fc-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.atelier-preset-list button {
+  position: relative;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--fc-border-soft);
+  border-radius: 0;
+  background-color: transparent;
+  color: var(--fc-text-secondary);
+  text-align: left;
+  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
+}
+.atelier-preset-list button:hover,
+.atelier-preset-list button[aria-pressed="true"] {
+  border-color: var(--fc-border-soft);
+  background: transparent;
+  color: var(--fc-text);
+  box-shadow: none;
+  transform: none;
+}
+.atelier-preset-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.atelier-preset-copy > b {
+  display: block;
+  width: 20px;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fc-text-subtle);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8px;
+  font-weight: 400;
+}
+.atelier-preset-list button[aria-pressed="true"] .atelier-preset-copy > b {
+  color: var(--fc-primary);
+}
+.atelier-preset-copy > span {
+  overflow: hidden;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.atelier-preset-copy > em {
+  margin-left: auto;
+  color: var(--fc-primary);
+  font-size: 8px;
+  font-style: normal;
+}
+.script-director-settings-custom {
+  min-height: 36px;
+  flex: none;
+  margin: 0;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fc-text-secondary);
+  font-size: 10px;
+}
+.script-director-settings-custom:hover {
+  border-color: var(--fc-border-strong);
+  background: transparent;
+  color: var(--fc-text);
+}
+.script-director-settings-main {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  border: 0;
+  border-radius: 0;
+  background: var(--fc-canvas);
+  box-shadow: none;
+}
+.script-director-settings-modal-meta { display: flex; align-items: center; gap: 6px; }
+.script-director-settings-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 26px 45px 38px;
+  scrollbar-color: var(--fc-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.script-director-settings-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 25px;
+  padding-bottom: 36px;
+}
+.script-director-settings-hero > div:first-child > span {
+  color: var(--fc-primary);
+  font-size: 9px;
+  letter-spacing: .2em;
+}
+.script-director-settings-hero h1 {
+  max-width: 560px;
+  margin: 11px 0 9px;
+  color: var(--fc-text);
+  font-family: "Songti SC", "STSong", serif;
+  font-size: clamp(31px, 4vw, 49px);
+  font-weight: 400;
+  letter-spacing: -.035em;
+  line-height: 1.12;
+}
+.script-director-settings-hero p {
+  max-width: 435px;
+  margin: 0;
+  color: var(--fc-text-muted);
+  font-size: 11px;
+  line-height: 1.85;
+}
+.script-director-settings-hero-mark {
+  display: grid;
+  min-width: 70px;
+  height: 70px;
+  place-items: center;
+  align-content: center;
+  border: 1px solid var(--fc-border-strong);
+  border-radius: 50%;
+  color: var(--fc-text-muted);
+}
+.script-director-settings-hero-mark strong {
+  color: var(--fc-primary);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 19px;
+  font-weight: 400;
+}
+.script-director-settings-hero-mark small {
+  margin-top: 3px;
+  font-size: 8px;
+}
+#script-settings-theme,
+#script-settings-fields,
+#script-settings-structure {
+  scroll-margin-top: 20px;
+}
+.script-director-settings-theme,
+.script-director-settings-fields {
+  padding-top: 23px;
+  border-top: 1px solid var(--fc-border);
+}
+.script-director-settings-fields {
+  margin-top: 36px;
+}
+.script-director-settings-section-heading {
+  margin-bottom: 19px;
+}
+.script-director-settings-section-heading strong {
+  font-family: "Songti SC", "STSong", serif;
+  font-size: 17px;
+  font-weight: 500;
+}
+.script-director-settings-section-heading span {
+  margin-top: 6px;
+  font-size: 10px;
+}
+.script-director-settings-summary {
+  min-width: 0;
+  overflow: auto;
+  padding: 20px 22px;
+  border-left: 1px solid var(--fc-border);
+  background: color-mix(in srgb, var(--fc-surface) 65%, var(--fc-canvas));
+}
+.script-director-settings-summary-poster {
+  position: relative;
+  min-height: 182px;
+  overflow: hidden;
+  background-position: center;
+  background-size: cover;
+}
+.script-director-settings-summary-poster > div {
+  position: absolute;
+  right: 16px;
+  bottom: 15px;
+  left: 16px;
+  z-index: 1;
+}
+.script-director-settings-summary-poster span,
+.script-director-settings-summary-poster strong,
+.script-director-settings-summary-poster small {
+  display: block;
+}
+.script-director-settings-summary-poster span {
+  color: var(--fc-primary);
+  font-size: 8px;
+  letter-spacing: .16em;
+}
+.script-director-settings-summary-poster strong {
+  margin-top: 6px;
+  color: var(--fc-text);
+  font-family: "Songti SC", "STSong", serif;
+  font-size: 22px;
+  font-weight: 500;
+}
+.script-director-settings-summary-poster small {
+  margin-top: 4px;
+  color: var(--fc-text-muted);
+  font-size: 9px;
+}
+.script-director-settings-summary-list {
+  margin-top: 24px;
+  border-top: 1px solid var(--fc-border);
+}
+.script-director-settings-summary-list > div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--fc-border-soft);
+}
+.script-director-settings-summary-list span {
+  color: var(--fc-text-muted);
+  font-size: 9px;
+}
+.script-director-settings-summary-list strong {
+  overflow: hidden;
+  color: var(--fc-text);
+  font-size: 10px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.script-director-settings-summary > p {
+  margin: 22px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--fc-border-soft);
+  color: var(--fc-text-muted);
+  font-size: 9px;
+  line-height: 1.8;
+}
+.script-director-settings-modal-foot {
+  display: flex;
+  min-height: 66px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 25px;
+  border-top: 1px solid var(--fc-border);
+  background: color-mix(in srgb, var(--fc-surface) 92%, var(--fc-panel));
+}
+.script-director-settings-modal-foot > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.script-director-settings-modal-foot .script-director-settings-confirm {
+  min-height: 36px;
+  padding-inline: 17px;
+  border-radius: 999px;
+  background: var(--fc-primary);
+  color: #fff;
+}
+.script-director-settings-modal-foot .script-director-settings-cancel {
+  min-height: 36px;
+  padding-inline: 17px;
+  border-radius: 999px;
+  color: var(--fc-text-secondary);
+}
+.script-director-settings-modal-foot .script-director-settings-confirm:hover {
+  background: var(--fc-primary-hover);
+}
+.atelier-section-heading {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 9px;
+  margin-bottom: 22px;
+}
+.atelier-section-heading > span {
+  color: var(--fc-primary);
+  font: 11px "IBM Plex Mono", monospace;
+}
+.atelier-section-heading h2 {
+  color: var(--fc-text);
+  font: 400 21px "Songti SC", "STSong", serif;
+}
+.atelier-section-heading p {
+  margin-top: 8px;
+  color: var(--fc-text-muted);
+  font-size: 10px;
+}
+.atelier-theme-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 30%) minmax(0, 1fr);
+  gap: 32px;
+}
+.atelier-topic-list {
+  min-width: 0;
+  height: 246px;
+  overflow: auto;
+  border-top: 1px solid var(--fc-border-soft);
+  scrollbar-width: thin;
+}
+.atelier-topic {
+  display: flex;
+  width: 100%;
+  min-height: 39px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 3px 5px 0;
+  border-bottom: 1px solid var(--fc-border-soft);
+  color: var(--fc-text-muted);
+  text-align: left;
+}
+.atelier-topic > span { flex: none; font-size: 11px; }
+.atelier-topic > small { margin-left: auto; font-size: 9px; text-align: right; }
+.atelier-topic::before {
+  width: 16px;
+  height: 1px;
+  flex: none;
+  background: transparent;
+  content: "";
+}
+.atelier-topic:hover,
+.atelier-topic[aria-pressed="true"] { color: var(--fc-text); }
+.atelier-topic[aria-pressed="true"]::before { background: var(--fc-primary); }
+
+.atelier-theme-stage {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 246px;
+  overflow: hidden;
+  isolation: isolate;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 30px 26px 22px 33px;
+  background: var(--fc-surface);
+}
+.atelier-theme-stage > img,
+.atelier-theme-stage::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.atelier-theme-stage > img {
+  object-fit: cover;
+  object-position: center 35%;
+  filter: saturate(.78);
+}
+.atelier-theme-stage::before {
+  z-index: 0;
+  background: linear-gradient(90deg, var(--fc-canvas) 2%, color-mix(in srgb, var(--fc-canvas) 72%, transparent) 46%, color-mix(in srgb, var(--fc-canvas) 39%, transparent));
+  content: "";
+}
+.atelier-theme-copy { position: relative; min-width: 0; }
+.atelier-theme-copy > span {
+  color: var(--fc-primary);
+  font-size: 9px;
+  letter-spacing: .14em;
+}
+.atelier-theme-copy > strong {
+  display: block;
+  margin-top: 12px;
+  color: var(--fc-text);
+  font: 400 34px/1.12 "Songti SC", "STSong", serif;
+  overflow-wrap: anywhere;
+}
+.atelier-theme-copy p { margin-top: 13px; color: var(--fc-text-secondary); font-size: 10px; }
+.atelier-theme-stage .atelier-fusion {
+  position: relative;
+  height: auto;
+  min-height: 38px;
+  max-width: 100%;
+  align-self: flex-end;
+  padding: 6px 13px;
+  border-color: color-mix(in srgb, var(--fc-primary) 55%, var(--fc-border));
+  border-radius: 999px;
+  background: var(--fc-surface);
+}
+.atelier-fusion small { margin-inline-start: 7px; color: var(--fc-text-muted); }
+.atelier-fusion .mantine-Button-label { white-space: normal; overflow-wrap: anywhere; }
+.script-director-settings-modal .script-director-settings-fields { margin-top: 36px; }
+.script-director-settings-modal .script-director-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 24px;
+}
+.script-director-settings-modal .script-director-settings-grid :is(.script-director-auto-card, .script-director-structure-card) {
+  min-height: 68px;
+  padding-inline: 0;
+  border: 0;
+  border-top: 1px solid var(--fc-border-soft);
+  border-radius: 0;
+  background: transparent;
+}
+.script-director-settings-modal .script-director-setting-heading small { color: var(--fc-text); }
+.script-director-settings-modal .atelier-structure {
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 30px;
+  padding-top: 23px;
+  border-top: 1px solid var(--fc-border);
+}
+
+@media (max-width: 1120px) {
+  .script-director-settings-modal .script-director-settings-scroll { padding-inline: 25px; }
+  .atelier-theme-layout { gap: 16px; }
+  .atelier-topic > small { display: none; }
+}
+@media (max-width: 940px) {
+  .script-director-settings-modal-body.mantine-Modal-body {
+    grid-template-columns: 170px minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: max-content;
+    overflow: auto;
+  }
+  .script-director-settings-modal .script-director-settings-main { display: contents; }
+  .script-director-settings-modal .script-director-settings-presets { grid-row: span 2; }
+  .script-director-settings-modal .script-director-settings-scroll { overflow: visible; min-height: min-content; }
+  .script-director-settings-summary {
+    grid-column: 2;
+    overflow: visible;
+    border-block-start: 1px solid var(--fc-border);
+  }
+  .script-director-settings-modal .script-director-settings-modal-foot {
+    position: sticky;
+    z-index: 3;
+    bottom: 0;
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+}
+@media (max-width: 700px) {
+  .script-director-settings-modal-body.mantine-Modal-body { grid-template-columns: minmax(0, 1fr); }
+  .script-director-settings-modal .script-director-settings-presets {
+    grid-row: auto;
+    gap: 12px;
+    padding: 10px 16px;
+    border: 0;
+    border-bottom: 1px solid var(--fc-border);
+  }
+  .script-director-settings-path { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .script-director-settings-path-item { min-height: 39px; padding-inline: 2px; grid-template-columns: 15px minmax(0, 1fr); }
+  .script-director-settings-path-item small { display: none; }
+  .script-director-settings-path-item::before { inset: auto 4px -1px 4px; width: auto; height: 2px; }
+  .script-director-settings-inspiration { padding-top: 0; border: 0; }
+  .atelier-preset-list {
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    gap: 12px;
+    margin-top: 5px;
+  }
+  .atelier-preset-copy > em { display: none; }
+  .script-director-settings-custom { align-self: flex-start; }
+  .script-director-settings-modal .script-director-settings-scroll { padding: 20px 16px; }
+  .script-director-settings-hero { gap: 8px; padding-bottom: 24px; }
+  .script-director-settings-hero h1 { font-size: clamp(25px, 7.1vw, 38px); }
+  .script-director-settings-hero-mark { min-width: 44px; height: 44px; }
+  .script-director-settings-hero-mark strong { font-size: 13px; }
+  .script-director-settings-hero-mark small { margin-top: 0; }
+  .atelier-theme-stage { grid-row: 1; min-height: 188px; padding: 18px; }
+  .atelier-theme-layout { grid-template-columns: minmax(0, 1fr); }
+  .atelier-topic-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: 135px; }
+  .script-director-settings-summary { grid-column: 1; border-inline-start: 0; }
+  .script-director-settings-modal .script-director-settings-modal-foot { grid-row: 4; gap: 6px; min-height: 52px; padding: 7px 10px; }
+  .script-director-settings-modal-foot .mantine-Switch-label { font-size: 10px; padding-inline-start: 4px; }
+  .script-director-settings-modal-foot :is(.script-director-settings-cancel, .script-director-settings-confirm) { padding-inline: 9px; }
+}

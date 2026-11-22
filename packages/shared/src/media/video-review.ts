@@ -38,3 +38,7 @@ export interface VideoReviewReport {
   evidence_frames: Array<{ time_ms: number; url: string }>
   sample_times_ms: number[]
 }
+
+export type VideoReviewResult = VideoReviewReport | (VideoReviewReport & {
+  pagination: { state: 'resumable' | 'delivery_pending' | 'needs_attention'; completed_pages: number }
+})

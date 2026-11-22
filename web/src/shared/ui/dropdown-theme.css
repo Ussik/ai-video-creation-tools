@@ -7,7 +7,8 @@
   background: var(--select-control);
   color: var(--select-text);
   font-size: 13px;
-  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+  box-shadow: var(--fc-control-recess);
+  transition: border-color 220ms var(--fc-ease), background-color 220ms var(--fc-ease), box-shadow 220ms var(--fc-ease);
 }
 
 .app-select-input:hover:not(:disabled):not([data-disabled]),
@@ -51,11 +52,11 @@
   min-width: min(180px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
   padding: var(--combobox-padding);
-  border: 1px solid var(--fc-border-soft);
-  border-radius: 12px;
-  background: var(--select-surface);
+  border: 1px solid var(--fc-border);
+  border-radius: 10px;
+  background: linear-gradient(150deg, var(--fc-control-highlight), transparent 45%), var(--select-surface);
   color: var(--select-text);
-  box-shadow: var(--fc-shadow);
+  box-shadow: var(--fc-popover-shadow);
 }
 
 .app-select-options { padding: 0; }
@@ -74,7 +75,7 @@
   font-weight: 400;
   line-height: 1.45;
   overflow-wrap: anywhere;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition: background-color 180ms var(--fc-ease), border-color 180ms var(--fc-ease), color 180ms var(--fc-ease);
 }
 
 .app-select-option:hover:not([data-combobox-disabled]),

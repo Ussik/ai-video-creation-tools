@@ -1,3 +1,4 @@
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { api, json } from '../../shared/api/api'
 import type { StoryboardPlanningTask } from '@video-studio/shared/storyboard/storyboard-planning-types'
 
@@ -5,6 +6,7 @@ export type PlanningTaskInput = {
   signature: string; scene_ids: string[]; document_ids: string[]; model_id: string; skill_ids?: string[]
   mode: 'update' | 'redesign'; instructions: string; shots_per_scene?: number; target_duration?: number
   duration_mode?: 'reestimate'; target_video_model_id?: string
+  text_generation_options?: TextGenerationOptions
 }
 type RememberedTask = { input: PlanningTaskInput; request_id: string; task_id?: string }
 const storageKey = (projectId: string) => `storyboard-planning-task:${projectId}`
@@ -12,6 +14,7 @@ const taskPath = (projectId: string) => `/projects/${encodeURIComponent(projectI
 const canonicalInput = (input: PlanningTaskInput) => JSON.stringify({
   signature: input.signature, scene_ids: [...input.scene_ids].sort(), document_ids: [...input.document_ids].sort(),
   model_id: input.model_id, skill_ids: input.skill_ids ?? null, mode: input.mode, instructions: input.instructions,
+  ...(input.text_generation_options?.reasoning ? { reasoning: input.text_generation_options.reasoning } : {}),
   shots_per_scene: input.shots_per_scene ?? null, target_duration: input.target_duration ?? null,
   duration_mode: input.duration_mode ?? 'preserve', target_video_model_id: input.target_video_model_id ?? null,
 })

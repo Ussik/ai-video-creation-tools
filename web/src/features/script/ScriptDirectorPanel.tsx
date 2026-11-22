@@ -2,6 +2,7 @@ import { isSavedDirectorWorkflow, isSupersededDirectorDraft, isSupersededDirecto
 import SourceRuntimeActivity from './SourceRuntimeActivity'
 import ScriptStageActions from './ScriptStageActions'
 import { stageOperationError, missingSavedStageArtifacts, stageLabels, type StageOperation, type StageTarget } from '@video-studio/shared/script/script-stage-access'
+import { useAppDialog } from '../../shared/ui/AppDialog'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
@@ -17,7 +18,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   FileText,
   History,
   LoaderCircle,
@@ -28,6 +28,7 @@ import {
   UserRound,
   MapPin,
   Package,
+  Sparkles,
   WandSparkles,
   Copy,
   RotateCcw,
@@ -47,6 +48,7 @@ import type { Asset, Job, Model, ProjectDetail, Provider, ScriptArtifact, Script
 import type { ScriptAction } from '../canvas/ProjectCanvas'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import { useCreativeSkills } from '../skills/useCreativeSkills'
 import type { SkillTaskContext } from '../../shared/api/skills-api'
 import StoryboardPlanner from '../storyboard/StoryboardPlanner'
@@ -89,8 +91,7 @@ import DirectorDraftReview, { DirectorDocumentBody, DirectorSceneList, RevisionP
 import { restoreChoiceAnswer, choiceAnswerText, type ChoiceAnswer } from './DirectorQuestionPanel'
 import { parseMessageChoices } from './director-choices'
 import ScriptMessageContent from './ScriptMessageContent'
-import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorWindowRect } from './director-window'
-import { ScriptThemeWaterCanvas as WebGLScriptThemeWaterCanvas } from './ScriptThemeWaterCanvas'
+import { clampDirectorWindow, defaultDirectorWindow, shouldSendDirectorMessage, type DirectorViewport, type DirectorWindowRect } from './director-window'
 import { artifactKey, workflowLabels, workflowStages, workflowProgress, directorStageContext, type DirectorStageContext } from './script-workflow'
 import { workflowRequestForStage, workflowRequestSnapshot, outlineGenerationIssue, exploreStoryDirectionMessage, type WorkflowDraft, type WorkflowRequest, type WorkflowStage } from './script-workflow'
 import { canAdoptReply, classificationBatch, classificationKey, followingMessages, replyRecognitionState, activeReplyChoice, replyChoices, replyDisplayText, replyClassificationVersion, contextualReplyTypes, type ReplyClassification } from './script-reply'
@@ -272,6 +273,11 @@ export interface ScriptDirectorPanelProps {
   initialStageRequest?: WorkflowRequest
   openRequestId?: number
   hidden?: boolean
+  presentation?: 'floating' | 'embedded' | 'workspace'
+  workspace?: 'chat' | 'settings' | 'source'
+  headerControls?: React.ReactNode
+  onWorkspaceChange?: (workspace: 'chat' | 'settings' | 'source') => void
+  registerNavigationGuard?: (guard: (() => Promise<boolean>) | null) => void
   onRefresh: () => Promise<unknown>
   onClose: () => void
   onOpenModels: () => void
@@ -475,173 +481,6 @@ function DirectorAutoField({ label, value, placeholder, options, icon: Icon, ope
   </Popover></div>
 }
 
-type InfiniteThemeRailProps = {
-  items: string[]
-  selected: string
-  side: 'primary' | 'fusion'
-  onSelect: (theme: string) => void
-  activeArtwork?: string
-}
-
-/**
- * A compact, looping topic picker. Five entries stay mounted so adjacent
- * topics can glide into the center while wheel, keyboard, buttons, and a
- * short vertical drag move through the same circular list.
- */
-function InfiniteThemeRail({ items, selected, side, onSelect, activeArtwork }: InfiniteThemeRailProps) {
-  const railStep = 52
-  const dragStart = useRef<number | null>(null)
-  const dragMoved = useRef(false)
-  const dragOffsetRef = useRef(0)
-  const cursorRef = useRef(0)
-  const wheelOffsetRef = useRef(0)
-  const wheelResetTimer = useRef<number | null>(null)
-  const [railOffset, setRailOffset] = useState(0)
-  const values = items.filter(Boolean)
-  const valuesKey = values.join('\u0001')
-  useEffect(() => {
-    if (!values.length) {
-      cursorRef.current = 0
-      return
-    }
-    const next = selected && values.includes(selected)
-      ? Math.max(0, values.indexOf(selected))
-      : Math.min(cursorRef.current, values.length - 1)
-    cursorRef.current = next
-  }, [selected, valuesKey])
-  if (!values.length) return null
-  const selectedIndex = selected && values.includes(selected)
-    ? Math.max(0, values.indexOf(selected))
-    : Math.min(cursorRef.current, values.length - 1)
-  const activeSelection = values[selectedIndex]!
-  const move = (delta: number) => {
-    const nextIndex = (cursorRef.current + delta + values.length) % values.length
-    cursorRef.current = nextIndex
-    const nextTheme = values[nextIndex]!
-    onSelect(nextTheme === '其他' ? '' : nextTheme)
-  }
-  const choose = (theme: string) => {
-    const nextIndex = values.indexOf(theme)
-    if (nextIndex >= 0) cursorRef.current = nextIndex
-    onSelect(theme === '其他' ? '' : theme)
-  }
-  // Keep adjacent entries mounted while the center changes so the CSS
-  // position transition can carry the rail from one topic to the next.
-  const visible = Array.from({ length: 5 }, (_, slot) => {
-    const offset = slot - 2
-    const index = (selectedIndex + offset + values.length) % values.length
-    return { theme: values[index]!, offset }
-  })
-  return <nav
-    className={`script-director-theme-rail is-infinite is-${side}`}
-    data-dragging={railOffset !== 0 ? 'true' : undefined}
-    aria-label={side === 'primary' ? '主题材选择' : '融合题材选择'}
-    onWheel={(event) => {
-      event.preventDefault()
-      if (Math.abs(event.deltaY) < 0.5) return
-      let nextOffset = wheelOffsetRef.current - event.deltaY
-      let steps = 0
-      while (nextOffset <= -railStep) {
-        nextOffset += railStep
-        steps += 1
-      }
-      while (nextOffset >= railStep) {
-        nextOffset -= railStep
-        steps -= 1
-      }
-      wheelOffsetRef.current = nextOffset
-      if (steps) move(steps)
-      setRailOffset(nextOffset)
-      if (wheelResetTimer.current !== null) window.clearTimeout(wheelResetTimer.current)
-      wheelResetTimer.current = window.setTimeout(() => {
-        wheelOffsetRef.current = 0
-        setRailOffset(0)
-        wheelResetTimer.current = null
-      }, 150)
-    }}
-    onKeyDown={(event) => {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-        event.preventDefault()
-        move(1)
-      } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-        event.preventDefault()
-        move(-1)
-      }
-    }}
-    onPointerDown={(event) => {
-      dragStart.current = event.clientY
-      dragMoved.current = false
-      dragOffsetRef.current = 0
-      setRailOffset(0)
-      if (wheelResetTimer.current !== null) {
-        window.clearTimeout(wheelResetTimer.current)
-        wheelResetTimer.current = null
-      }
-      wheelOffsetRef.current = 0
-      // Let native button clicks reach the item. Pointer capture on the nav
-      // itself would swallow the click before the fusion choice can commit.
-      if (!(event.target as HTMLElement).closest('button')) event.currentTarget.setPointerCapture(event.pointerId)
-    }}
-    onPointerMove={(event) => {
-      if (dragStart.current === null) return
-      const delta = event.clientY - dragStart.current
-      if (Math.abs(delta) < 3) return
-      dragMoved.current = true
-      const nextOffset = Math.max(-railStep * 2, Math.min(railStep * 2, delta))
-      dragOffsetRef.current = nextOffset
-      setRailOffset(nextOffset)
-    }}
-    onPointerUp={() => {
-      const steps = Math.round(-dragOffsetRef.current / railStep)
-      if (steps) move(steps)
-      dragStart.current = null
-      dragOffsetRef.current = 0
-      setRailOffset(0)
-      window.setTimeout(() => { dragMoved.current = false }, 0)
-    }}
-    onPointerCancel={() => {
-      dragStart.current = null
-      dragOffsetRef.current = 0
-      setRailOffset(0)
-      dragMoved.current = false
-    }}
-    tabIndex={0}
-  >
-    <UnstyledButton type="button" className="script-director-theme-rail-nudge is-prev" onClick={() => move(-1)} aria-label="上一个题材"><ChevronUp size={13} /></UnstyledButton>
-    <div className="script-director-theme-rail-viewport">
-      {visible.map(({ theme, offset }) => {
-        const active = offset === 0 && theme === activeSelection && Boolean(selected)
-        const committed = active
-        return <UnstyledButton
-          type="button"
-          key={theme}
-          className={`script-director-theme-rail-item${active ? ` is-${side}` : ''}`}
-          data-offset={offset}
-          style={{ '--rail-y': `${offset * railStep}px`, '--rail-drag-y': `${railOffset}px` } as CSSProperties}
-          onClick={() => {
-            if (dragMoved.current) return
-            choose(theme)
-          }}
-          aria-current={active ? 'true' : undefined}
-        >
-          {side === 'primary' && active && <span className="script-director-theme-rail-caret" aria-hidden="true">◀</span>}
-          {side === 'fusion' && active && <span className="script-director-theme-rail-caret" aria-hidden="true">▶</span>}
-          {theme === '其他' ? <span className="script-director-theme-other-icon" aria-hidden="true"><PenLine size={15} /></span> : (() => {
-            const artwork = active && activeArtwork ? activeArtwork : directorArtworkForTheme(theme)
-            return <span className={`script-director-theme-dot tone-${directorThemeTone(theme)}`} style={artwork ? { backgroundImage: `url("${artwork}")` } : undefined} />
-          })()}
-          <span>{theme}</span>
-          {committed && <small>{side === 'primary' ? '主' : '融'}</small>}
-        </UnstyledButton>
-      })}
-    </div>
-    <UnstyledButton type="button" className="script-director-theme-rail-nudge is-next" onClick={() => move(1)} aria-label="下一个题材"><ChevronDown size={13} /></UnstyledButton>
-    {side === 'primary' && <Button type="button" className="script-director-theme-other" onClick={() => onSelect('')} data-workspace-control="" variant="subtle"><PenLine size={12} />其他</Button>}
-  </nav>
-}
-
-// Top 8 has its own ranked cover. The selected rail and waterball continue
-// to use the shared 玄幻修仙 topic artwork.
 const directorTop8Artwork = '/topic-art/covers/top/top-8.jpg'
 
 const directorSettingPresets: Array<{ label: string; values: Partial<ScriptGenerationOptions>; artwork?: string }> = [
@@ -657,36 +496,27 @@ const directorSettingPresets: Array<{ label: string; values: Partial<ScriptGener
 
 const directorThemeChoices = [...scriptThemeCategories, '其他']
 
-// Keep the first open of the settings dialog useful even when a project has
-// no saved generation options yet. The fusion default is selected when the
-// user explicitly adds the second topic, so opening the dialog still shows a
-// single stable anchor orb.
 const defaultPrimaryTheme = '玄幻修仙'
-const defaultFusionTheme = '都市现实'
 
 function directorArtworkForTheme(theme: string): string {
   return isScriptThemeCategory(theme) ? scriptThemeArtwork[theme] : neutralThemeArtwork
 }
 
-function ScriptThemeWaterCanvas({ primary, fusion, primaryArtwork, fusionArtwork, active, onFusionSettled }: { primary: string; fusion: string; primaryArtwork?: string; fusionArtwork?: string; active: boolean; onFusionSettled?: (hasFusion: boolean) => void }) {
-  return <WebGLScriptThemeWaterCanvas
-    primary={primary}
-    fusion={fusion}
-    primaryArtwork={primaryArtwork || directorArtworkForTheme(primary)}
-    fusionArtwork={fusionArtwork || directorArtworkForTheme(fusion)}
-    active={active}
-    onFusionSettled={onFusionSettled}
-  />
+const directorThemeDescriptions: Record<string, string> = {
+  玄幻修仙: '主角成长、门派与秘境',
+  都市现实: '职业选择与关系变化',
+  末世科幻: '资源、危机与团队协作',
+  文旅非遗: '民俗、传承与当代生活',
+  古装言情: '情感关系与时代身份',
+  惊悚怪谈: '规则背后的未知真相',
 }
 
-function directorThemeTone(value: string): string {
-  const tones: Record<string, string> = {
-    '玄幻修仙': 'fantasy', '都市现实': 'city', '古装言情': 'heritage', '历史传奇': 'heritage',
-    '文旅非遗': 'culture', '悬疑推理': 'thriller', '惊悚怪谈': 'thriller', '犯罪谍战': 'crime', '重生复仇': 'crime',
-    '家庭伦理': 'family', '末世科幻': 'future', '喜剧': 'comedy', '体育竞技': 'sports', '主旋律': 'hero',
-  }
-  return tones[value] || 'neutral'
-}
+const atelierThemes = [...new Set([...Object.keys(directorThemeDescriptions), ...directorThemeChoices])]
+const atelierSections = [
+  { id: 'theme', title: '叙事基因', detail: '主题与情绪' },
+  { id: 'fields', title: '创作要素', detail: '人物与世界' },
+  { id: 'structure', title: '结构节奏', detail: '集数与推进' },
+] as const
 
 const directorAutoFieldOptions: Record<'audience' | 'character_notes' | 'era' | 'core_hook' | 'visual_style', string[]> = {
   audience: ['男频', '女频', '泛人群', '出海', '银发'],
@@ -815,15 +645,21 @@ function DirectorMessageText({ text }: { text: string }) {
   return <ScriptMessageContent text={text} />
 }
 
+const defaultDockWidth = 520
+const minDockWidth = 320
+const minResizableDockViewport = 480
+const maxDockWidth = (viewportWidth: number) => Math.min(760, Math.round(viewportWidth * .65))
+
 function readWindowLayout() {
   const viewport = { width: window.innerWidth, height: window.innerHeight }
   try {
-    const value = JSON.parse(window.localStorage.getItem('script-director-window') || '') as { rect?: DirectorWindowRect; docked?: boolean }
+    const value = JSON.parse(window.localStorage.getItem('script-director-window') || '') as { rect?: DirectorWindowRect; docked?: boolean; dockWidth?: number }
     if (value.rect && [value.rect.x, value.rect.y, value.rect.width, value.rect.height].every(Number.isFinite)) {
-      return { rect: clampDirectorWindow(value.rect, viewport), docked: value.docked === true }
+      const dockWidth = typeof value.dockWidth === 'number' && Number.isFinite(value.dockWidth) ? value.dockWidth : defaultDockWidth
+      return { rect: clampDirectorWindow(value.rect, viewport), docked: value.docked === true, dockWidth }
     }
   } catch { /* Use the default window when preferences are unavailable. */ }
-  return { rect: defaultDirectorWindow(viewport), docked: false }
+  return { rect: defaultDirectorWindow(viewport), docked: false, dockWidth: defaultDockWidth }
 }
 
 function readQuestionState(projectId: string): { answers: Record<string, ChoiceAnswer>; dismissed: Record<string, boolean>; retryId: string | null } {
@@ -863,10 +699,25 @@ function removeRevisionPrefill(input: string, prompt: string) {
   return input.startsWith(prompt) ? input.slice(prompt.length).replace(/^\r?\n/, '') : input
 }
 
-function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, canvasNodeSource, onApplyCanvasNodeProposal, initialStageRequest, openRequestId, hidden = false, onRefresh, onClose, onOpenModels, onOpenShotManager, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
+function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all', initialContext, canvasNodeSource, onApplyCanvasNodeProposal, initialStageRequest, openRequestId, hidden = false, presentation = 'floating', workspace = 'chat', headerControls, onWorkspaceChange, registerNavigationGuard, onRefresh, onClose, onOpenModels, onOpenShotManager, onOpenDocument, onNotice }: ScriptDirectorPanelProps) {
+  const { confirm: confirmNavigation, dialog: navigationDialog } = useAppDialog({ zIndex: 450 })
   const [windowLayout, setWindowLayout] = useState(readWindowLayout)
-  const compactComposer = (windowLayout.docked ? window.innerHeight : windowLayout.rect.height) <= 520
   const [minimized, setMinimized] = useState(false)
+  const [minimizedDockPosition, setMinimizedDockPosition] = useState<Pick<DirectorWindowRect, 'x' | 'y'> | null>(null)
+  const [windowViewport, setWindowViewport] = useState<DirectorViewport>(() => ({ width: window.innerWidth, height: window.innerHeight }))
+  const minimizedHeight = minimized ? 68 : undefined
+  const minimizedDocked = windowLayout.docked && minimized
+  const dockWidthLimit = maxDockWidth(windowViewport.width)
+  const dockResizable = windowViewport.width > minResizableDockViewport
+  const dockWidthMinimum = Math.min(minDockWidth, dockWidthLimit)
+  const dockWidth = dockResizable ? Math.min(dockWidthLimit, Math.max(dockWidthMinimum, windowLayout.dockWidth)) : windowViewport.width
+  const windowRect = clampDirectorWindow(minimizedDocked ? {
+    ...windowLayout.rect,
+    width: dockWidth,
+    ...(minimizedDockPosition ?? { x: windowViewport.width, y: 0 }),
+  } : windowLayout.rect, windowViewport, minimizedHeight)
+  const windowDocked = windowLayout.docked && !minimized
+  const compactComposer = (windowDocked ? windowViewport.height - (windowViewport.top ?? 0) : windowRect.height) <= 520
   const [workflowOpen, setWorkflowOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState(false)
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false)
@@ -904,6 +755,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const [closing, setClosing] = useState(false)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const gestureRef = useRef<{ pointer: number; x: number; y: number; rect: DirectorWindowRect; resize: boolean } | null>(null)
+  const dockDragRef = useRef<{ pointer: number; x: number; width: number } | null>(null)
   const availableModels = useMemo(() => models.filter((model) => {
     const provider = providers.find((item) => item.id === model.provider_id)
     return model.modality === 'text' && model.enabled && !!provider?.enabled && provider.adapter !== 'demo'
@@ -926,17 +778,23 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const documentProgressRefresh = useRef({ running: false, pending: false })
   const [mode, setMode] = useState<DirectorMode>('script')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsName, setSettingsName] = useState(detail.name)
+  const [settingsBrief, setSettingsBrief] = useState(detail.brief || '')
+  const [settingsRatio, setSettingsRatio] = useState(detail.ratio)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const settingsSavingRef = useRef(false)
+  const settingsSnapshot = useRef('')
+  const [briefAtelierSnapshot, setBriefAtelierSnapshot] = useState<{ draft: ScriptGenerationOptions; artwork?: string } | null>(null)
   const [showSettingPresets, setShowSettingPresets] = useState(true)
   const [structurePickerOpen, setStructurePickerOpen] = useState(false)
   const [autoFieldOpen, setAutoFieldOpen] = useState<DirectorAutoFieldProps['label'] | null>(null)
   const [fusionRailOpen, setFusionRailOpen] = useState(false)
-  const [fusionExitActive, setFusionExitActive] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<ScriptGenerationOptions>(() => optionsFromDetail(detail))
   const [settingsPresetArtwork, setSettingsPresetArtwork] = useState<string | undefined>(undefined)
   const themeVisuals = useThemeVisuals(detail.id, modelId, settingsDraft.genre || '', settingsDraft.genre_fusion || '', settingsOpen)
   const primaryThemeArtwork = (settingsPresetArtwork === directorTop8Artwork ? undefined : settingsPresetArtwork)
     || directorArtworkForTheme(themeVisuals.primary || '')
-  const fusionThemeArtwork = directorArtworkForTheme(themeVisuals.fusion || '')
+  const [settingsSection, setSettingsSection] = useState<(typeof atelierSections)[number]['id']>('theme')
   const [input, setInput] = useState(() => readComposerDraft(detail.id))
   const receivedContext = useRef('')
   const [contextComposerActive, setContextComposerActive] = useState(false)
@@ -1005,7 +863,8 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   const handoffScenes = (detail.script?.scenes || []).filter(scene => !handoffEpisode || scene.episode_number === handoffEpisode)
   const savedEpisodes = (detail.script.artifacts || []).filter(artifact => artifact.artifact_type === 'episode_script' && (artifact.episode_number || 0) > 0).sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0))
   const selectedModel = availableModels.find((model) => model.id === modelId)
-  const modelSelector = <Select
+  const reasoning = useTaskReasoning(selectedModel)
+  const textModelSelector = <Select
           className="script-director-model-select"
           aria-label="文本模型"
           title={selectedModel?.name}
@@ -1016,12 +875,15 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             label: model.name,
           }))}
           allowDeselect={false}
-          disabled={working !== null || sourceUploading || canvasNodeProposalBusy}
+          disabled={working !== null || sourceUploading || canvasNodeProposalBusy || sourceAnalysisActing || ['queued', 'running'].includes(scriptSource?.analysis?.status || '')}
           size="xs"
           comboboxProps={{ withinPortal: true, zIndex: 400, position: 'top-start', width: 320 }}
           styles={{ dropdown: { maxWidth: 'calc(100vw - 24px)' }, option: { whiteSpace: 'normal', overflowWrap: 'anywhere' } }}
           onChange={value => selectModel(value || '')}
         />
+  const sourceAnalysisBusy = sourceAnalysisActing || ['queued', 'running'].includes(scriptSource?.analysis?.status || '')
+  const reasoningDisabled = working !== null || sourceUploading || canvasNodeProposalBusy || sourceAnalysisBusy
+  const modelSelector = <>{textModelSelector}<TaskReasoningSelect reasoning={reasoning} disabled={reasoningDisabled} /></>
 
   const assetJob = assetJobId ? detail.jobs.find((job) => job.id === assetJobId) : undefined
   const assetResult = assetJob?.result_asset_id ? detail.assets.find((asset) => asset.id === assetJob.result_asset_id) : undefined
@@ -1083,7 +945,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     selection={skillControl.selection(currentSkillStage)} onUseAutomatic={() => skillControl.useAutomatic(currentSkillStage)}
     projectId={detail.id} appearance="chat" withinPortal={withinPortal} disabled={!!working || closing} loading={skillControl.loading} error={skillControl.error} onDefaultsChanged={() => skillControl.reload(currentSkillStage)} />
   const creationOptions = <DirectorCreationOptions mode={mode} onModeChange={setMode} opened={composerOptionsOpen} onOpenedChange={setComposerOptionsOpen}
-    disabled={busy || closing} skillSelector={skillSelector(false)} skillLabel={currentSkillStage === 'script' ? '创作技能' : '视觉设定技能'} />
+    disabled={busy || sourceAnalysisBusy || closing} skillSelector={skillSelector(false)} skillLabel={currentSkillStage === 'script' ? '创作技能' : '视觉设定技能'} />
   const workflowIssue = stageOperationError(detail.script, workflowTarget)
     || (workflowOperation === 'supplement' && workflowTarget.artifact_types?.length === 0 ? '所选栏目已保存，无需补齐' : null)
     || (workflowStage === 'outline' && workflowOperation === 'generate' ? outlineIssue : null)
@@ -1154,11 +1016,19 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   useEffect(() => {
     try { window.localStorage.setItem('script-director-window', JSON.stringify(windowLayout)) } catch { /* Keep the current geometry in memory. */ }
   }, [windowLayout])
-  useEffect(() => {
-    const resize = () => setWindowLayout(current => ({ ...current, rect: clampDirectorWindow(current.rect, { width: window.innerWidth, height: window.innerHeight }) }))
+  useLayoutEffect(() => {
+    if (hidden || presentation !== 'floating') return
+    const nav = directorPanelRef.current?.closest('main')?.querySelector('.project-workspace-nav')
+    const resize = () => setWindowViewport({ width: window.innerWidth, height: window.innerHeight, top: nav?.getBoundingClientRect().bottom })
+    resize()
+    const observer = nav && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null
+    if (nav) observer?.observe(nav)
     window.addEventListener('resize', resize)
-    return () => window.removeEventListener('resize', resize)
-  }, [])
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', resize)
+    }
+  }, [hidden, presentation])
   useEffect(() => {
     try { window.localStorage.setItem(`script-director-input:${detail.id}`, input) } catch { /* Keep the unsent input in memory. */ }
     const textarea = composerRef.current
@@ -1450,6 +1320,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
 
   useEffect(() => {
     if (!conversationSyncReady.current) return
+    if (!history.length && messages.length === 1 && messages[0]?.id === welcomeMessage.id) return
     if (messages.some((message) => message.pending)) return
     const serial = ++conversationSaveSerial.current
     if (remoteConversationSaveTimer.current !== null) window.clearTimeout(remoteConversationSaveTimer.current)
@@ -1495,7 +1366,31 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     else if (assetJob.status === 'failed') setAssetTaskStatus('failed')
   }, [assetJob?.id, assetJob?.status])
 
+  function openBriefAtelier() {
+    setBriefAtelierSnapshot({ draft: settingsDraft, artwork: settingsPresetArtwork })
+    setAutoFieldOpen(null)
+    setStructurePickerOpen(false)
+    setFusionRailOpen(false)
+    setSettingsSection('theme')
+  }
+
+  function closeAtelier(accept = false) {
+    if (!briefAtelierSnapshot) {
+      setSettingsOpen(false)
+      return
+    }
+    if (!accept) {
+      setSettingsDraft(briefAtelierSnapshot.draft)
+      setSettingsPresetArtwork(briefAtelierSnapshot.artwork)
+    }
+    setBriefAtelierSnapshot(null)
+    setAutoFieldOpen(null)
+    setStructurePickerOpen(false)
+    setFusionRailOpen(false)
+  }
+
   function openSettings() {
+    setSettingsName(detail.name); setSettingsBrief(detail.brief || idea); setSettingsRatio(detail.ratio)
     const nextDraft = {
       ...options,
       genre: options.genre || defaultPrimaryTheme,
@@ -1509,10 +1404,11 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     })
     setSettingsPresetArtwork(matchingPreset?.artwork)
     setSettingsDraft(nextDraft)
+    settingsSnapshot.current = JSON.stringify([nextDraft, detail.name, detail.brief || idea, detail.ratio])
     setAutoFieldOpen(null)
     setStructurePickerOpen(false)
-    setFusionRailOpen(Boolean(nextDraft.genre_fusion))
-    setFusionExitActive(false)
+    setFusionRailOpen(false)
+    setSettingsSection('theme')
     setSettingsOpen(true)
   }
 
@@ -1531,24 +1427,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setSettingsPresetArtwork(undefined)
   }
 
-  function clearFusionTheme() {
-    // Keep the paired layout in place while WebGL merges the secondary lobe
-    // back into the primary one. Removing the layout class immediately would
-    // make the remaining lobe jump before the reverse transition finishes.
-    setFusionExitActive(true)
-    setSettingsDraft((current) => ({ ...current, genre_fusion: '' }))
-    setFusionRailOpen(false)
-  }
-
   function selectFusionTheme(theme: string) {
-    if (!theme) {
-      setSettingsDraft((current) => ({ ...current, genre_fusion: '' }))
-      setFusionRailOpen(true)
-      return
-    }
     if (theme === settingsDraft.genre) return
     setSettingsDraft((current) => ({ ...current, genre_fusion: theme }))
-    setFusionRailOpen(true)
+    setFusionRailOpen(false)
   }
 
   function updateSettingsDraft(key: keyof ScriptGenerationOptions, value: string | number | undefined) {
@@ -1561,7 +1443,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setOptions(confirmed)
     setAutoFieldOpen(null)
     setStructurePickerOpen(false)
-    setSettingsOpen(false)
+    if (workspace !== 'settings') setSettingsOpen(false)
+    setSettingsSaving(true); settingsSavingRef.current = true
+    let savedSettings = false
     const summary = [
       confirmed.genre && `题材：${confirmed.genre}`,
       confirmed.genre_fusion && `融合题材：${confirmed.genre_fusion}`,
@@ -1578,17 +1462,25 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     // moving on to outline and character work.
     // Keep existing documents and scenes intact while only replacing the
     // generation options and the current project brief.
-    void api<ProjectDetail['script']>(`/projects/${detail.id}/script`, json('PUT', {
-      brief: idea.trim() || detail.brief || undefined,
+    const saveProject = workspace === 'settings' && (settingsName.trim() !== detail.name || settingsRatio !== detail.ratio)
+      ? api(`/projects/${detail.id}`, json('PATCH', { name: settingsName.trim(), ratio: settingsRatio })) : Promise.resolve()
+    void saveProject.then(() => api<ProjectDetail['script']>(`/projects/${detail.id}/script`, json('PUT', {
+      brief: workspace === 'settings' ? settingsBrief.trim() : idea.trim() || detail.brief || undefined,
       outline: detail.script?.outline || '',
       characters: detail.script?.characters || '',
       generation_options: confirmed,
-    })).then(async () => {
+    }))).then(async () => {
+      settingsSnapshot.current = JSON.stringify([confirmed, settingsName, settingsBrief, settingsRatio])
+      if (workspace === 'settings') setIdea(settingsBrief)
       await onRefresh()
       onNotice('剧本设定已保存')
-    }).catch(() => {
-      // The local state remains usable when the API is temporarily offline;
-      // the next successful project refresh will reconcile the saved values.
+      savedSettings = true
+    }).catch(issue => {
+      const message = `设定保存失败：${readableError(issue)}`
+      setError(message); onNotice(message)
+    }).finally(() => {
+      settingsSavingRef.current = false; setSettingsSaving(false)
+      if (savedSettings && workspace === 'settings') onWorkspaceChange?.('chat')
     })
   }
 
@@ -2235,7 +2127,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setPendingSourceFile(null); setSourceUploading(true); setError(null)
     try {
       const form = new FormData(); form.append('file', file)
-      const source = await api<ScriptSourceDocument>(`/projects/${detail.id}/script/source${selectedModel ? `?model_id=${encodeURIComponent(selectedModel.id)}` : ''}`, { method: 'POST', body: form })
+      const query = new URLSearchParams()
+      if (selectedModel) query.set('model_id', selectedModel.id)
+      if (reasoning.request.text_generation_options) query.set('reasoning', reasoning.value)
+      const source = await api<ScriptSourceDocument>(`/projects/${detail.id}/script/source${selectedModel ? `?${query}` : ''}`, { method: 'POST', body: form })
       if (!mountedRef.current) return
       setScriptSource(source)
       setSourcePollError('')
@@ -2251,7 +2146,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const suffix = action === 'start' ? '' : action === 'pause' ? '/pause' : '/revalidate'
     try {
       const analysis = await api<NonNullable<ScriptSourceDocument['analysis']>>(`/projects/${detail.id}/script/source/analysis${suffix}`,
-        json('POST', action === 'start' ? { model_id: selectedModel!.id, source_updated_at: currentSource.updated_at }
+        json('POST', action === 'start' ? { model_id: selectedModel!.id, source_updated_at: currentSource.updated_at, ...reasoning.request }
           : action === 'pause' ? { analysis_id: currentSource.analysis!.id }
             : { analysis_id: currentSource.analysis!.id, source_updated_at: currentSource.updated_at }))
       if (!mountedRef.current || version !== sourceReadVersion.current) return
@@ -2417,6 +2312,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
           conversation: { id: requestConversationId, label: (retry?.question.text || messages.find(message => message.role === 'user')?.text || userMessage.text).slice(0, 120),
             messages: (retry ? retry.before : [...messages, userMessage]).filter(message => !message.pending).slice(-79).map(conversationMessage) } } } : {}),
         model_id: modelId,
+        ...reasoning.request,
         ...(resolutionInput ? { draft_resolution: resolutionInput } : {}),
         mode: requestMode,
         focus_artifact: requestFocus,
@@ -2614,7 +2510,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     setError(null)
     try {
       const result = await api<{ prompt_zh: string; prompt_en: string; notes: string }>(`/projects/${detail.id}/script/director/asset-prompt`, json('POST', {
-        model_id: modelId, focus_artifact: activeFocus, generation_options: options, skill_selections: skillControl.selections,
+        model_id: modelId, ...reasoning.request, focus_artifact: activeFocus, generation_options: options, skill_selections: skillControl.selections,
         messages: messages.filter(message => !message.pending && !message.failed).slice(-32).map(({ role, text }) => ({ role, text })),
       }))
       setAssetPrompt(result.prompt_zh)
@@ -2829,10 +2725,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
   }
 
   function startWindowGesture(event: React.PointerEvent<HTMLElement>, resize = false) {
-    if (windowLayout.docked || event.button !== 0 || (!resize && (event.target as HTMLElement).closest('button, input'))) return
+    if (presentation !== 'floating' || windowDocked || event.button !== 0 || (!resize && (event.target as Element).closest('button, input'))) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    gestureRef.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: windowLayout.rect, resize }
+    gestureRef.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: windowRect, resize }
   }
   function moveWindowGesture(event: React.PointerEvent<HTMLElement>) {
     const gesture = gestureRef.current
@@ -2840,7 +2736,9 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y
     const rect = gesture.resize ? { ...gesture.rect, width: gesture.rect.width + dx, height: gesture.rect.height + dy }
       : { ...gesture.rect, x: gesture.rect.x + dx, y: gesture.rect.y + dy }
-    setWindowLayout(current => ({ ...current, rect: clampDirectorWindow(rect, { width: window.innerWidth, height: window.innerHeight }) }))
+    const nextRect = clampDirectorWindow(rect, windowViewport, minimizedHeight)
+    if (minimizedDocked) setMinimizedDockPosition({ x: nextRect.x, y: nextRect.y })
+    else setWindowLayout(current => ({ ...current, rect: nextRect }))
   }
   function latestMessages() {
     followMessagesRef.current = true
@@ -2873,11 +2771,12 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         onNotice(cached ? '对话已缓存在本机，服务端保存失败，请稍后重试' : '服务端保存失败，且本机存储无法保存这份对话；请保持页面打开并恢复浏览器存储')
       }
     }
+    setClosing(false)
     onClose()
   }
 
-  const sourceTaskMessage = (activeFocus === 'all' && scriptSource && <div className="script-director-message assistant" data-source-analysis={scriptSource.analysis?.id}>
-        <ScriptSourceAnalysisStatus source={scriptSource} extractionOnly starting={sourceAnalysisActing} unavailable={!selectedModel || sourceUploading || busy} pollError={Boolean(sourcePollError)}
+  const sourceTaskMessage = (activeFocus === 'all' && scriptSource && <div className={workspace === 'source' ? 'source-workspace-analysis' : 'script-director-message assistant'} data-source-analysis={scriptSource.analysis?.id}>
+        <ScriptSourceAnalysisStatus source={scriptSource} extractionOnly showPhasePrefix={workspace !== 'source'} starting={sourceAnalysisActing} unavailable={!selectedModel || sourceUploading || busy} pollError={Boolean(sourcePollError)}
         onStart={() => void actOnSourceAnalysis('start')} onPause={() => void actOnSourceAnalysis('pause')}
         recovery={sourceRecoveryState} onRevalidate={() => void actOnSourceAnalysis('revalidate')} onResolveRequest={() => { setSourceRecoveryConfirming(sourceRecoveryState?.state === 'risk_required'); setSourceRecoveryOpen(true) }}
         onRequestDetails={() => setSourceRequestDetailsOpen(true)} />
@@ -2944,17 +2843,213 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         </div>
   }
 
+  useEffect(() => {
+    setBriefAtelierSnapshot(null)
+    if (workspace === 'settings') openSettings()
+    else setSettingsOpen(false)
+  }, [workspace])
+  useEffect(() => {
+    registerNavigationGuard?.(async () => {
+      if (briefAtelierSnapshot) return false
+      if (settingsSavingRef.current || sourceUploading) { onNotice('请等待当前保存完成'); return false }
+      if (workspace === 'settings' && settingsSnapshot.current !== JSON.stringify([settingsDraft, settingsName, settingsBrief, settingsRatio])) {
+        return await confirmNavigation({title:'离开创作设定？', message:'当前设定尚未保存，离开将放弃本次修改。', confirmLabel:'放弃修改并离开', cancelLabel:'继续编辑'})
+      }
+      return true
+    })
+    return () => registerNavigationGuard?.(null)
+  }, [registerNavigationGuard, workspace, settingsDraft, settingsName, settingsBrief, settingsRatio, settingsSaving, sourceUploading, briefAtelierSnapshot, onNotice, confirmNavigation])
+  function renderSettingsContent(isBrief: boolean) {
+    const structurePicker = <DirectorStructurePicker
+        value={settingsDraft.story_structure || ''}
+        episodeCount={settingsDraft.episode_count}
+        open={(!isBrief || !briefAtelierSnapshot) && structurePickerOpen}
+        onToggle={() => { setAutoFieldOpen(null); setStructurePickerOpen((value) => !value) }}
+        onChange={(value) => updateSettingsDraft('story_structure', value)}
+        onEpisodeCountChange={(value) => updateSettingsDraft('episode_count', value)}
+    />
+    return <>
+    {isBrief && <aside className="creative-brief-art" style={{backgroundImage: `linear-gradient(180deg, #10141808, #101418c9), url("${detail.assets.find(asset => asset.kind === 'image')?.url || primaryThemeArtwork}")`}}>
+      <Button type="button" className="creative-brief-open-atelier" variant="default" size="xs" leftSection={<Sparkles size={14} />}
+        onClick={openBriefAtelier} disabled={settingsSaving}>打开剧本设定器</Button>
+      <div className="creative-brief-art-copy">
+        <span>{settingsDraft.genre || '故事创作'}</span>
+        <h1>{settingsName || '未命名项目'}</h1>
+        {settingsBrief && <p>{settingsBrief}</p>}
+        <small>{settingsRatio} · {settingsDraft.visual_style || '画风待设定'}</small>
+      </div>
+    </aside>}
+
+        {!isBrief && <aside className="script-director-settings-presets">
+          <nav className="script-director-settings-path" aria-label="设定构建路径">
+            {atelierSections.map(({ id, title, detail }, index) => <UnstyledButton
+              key={id} type="button" className="script-director-settings-path-item" aria-current={settingsSection === id ? 'location' : undefined}
+              onClick={() => {
+                setSettingsSection(id)
+                document.getElementById(`script-settings-${id}`)?.scrollIntoView({ block: 'start' })
+              }} data-workspace-control=""
+            ><b>0{index + 1}</b><span><strong>{title}</strong><small>{detail}</small></span></UnstyledButton>)}
+          </nav>
+          {showSettingPresets && <div className="script-director-settings-inspiration">
+            <div className="script-director-settings-inspiration-label">灵感样本</div>
+            <div className="atelier-preset-list">
+              {directorSettingPresets.map((preset, index) => <UnstyledButton
+                type="button" key={preset.label}
+                aria-pressed={settingsDraft.genre === preset.values.genre && settingsPresetArtwork === preset.artwork}
+                onClick={() => {
+                  setAutoFieldOpen(null)
+                  setStructurePickerOpen(false)
+                  setFusionRailOpen(false)
+                  setSettingsPresetArtwork(preset.artwork)
+                  setSettingsDraft(current => ({ ...current, ...preset.values,
+                    ...(preset.values.visual_style ? { visual_style_details: undefined } : {}) }))
+                }}
+              ><span className="atelier-preset-copy"><b>0{index + 1}</b><span>{preset.label}</span><em>精选</em></span></UnstyledButton>)}
+            </div>
+          </div>}
+          <Button type="button" className="script-director-settings-custom" onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setSettingsPresetArtwork(undefined); setFusionRailOpen(false); setSettingsDraft(emptyOptions) }} data-workspace-control="" variant="subtle"><PenLine size={13} />新建一套设定</Button>
+        </aside>}
+        <div className="script-director-settings-main">
+          <div className="script-director-settings-scroll" onMouseDown={(event) => {
+            const target = event.target as HTMLElement
+            if (!target.closest('.script-director-structure-picker') && !target.closest('.script-director-structure-popover')) setStructurePickerOpen(false)
+            if (!target.closest('.script-director-auto-field') && !target.closest('.script-director-auto-popover')) setAutoFieldOpen(null)
+          }}>
+            {isBrief ? <section className="creative-brief-fields">
+              <h2>故事从一个念头开始。</h2>
+              <TextInput label="项目名称" value={settingsName} onChange={event => setSettingsName(event.currentTarget.value)} maxLength={120} />
+              <Textarea label="故事起点" value={settingsBrief} onChange={event => setSettingsBrief(event.currentTarget.value)} minRows={4} autosize maxRows={8} />
+              <div className="creative-brief-pair"><Select label="主题材" value={settingsDraft.genre || null} searchable allowDeselect={false}
+                data={[...new Set([...directorThemeChoices, settingsDraft.genre || ''].filter(Boolean))]} onChange={value => value && selectTheme(value)} />
+                <Select label="融合题材" value={settingsDraft.genre_fusion || null} clearable searchable data={[...new Set([...directorThemeChoices, settingsDraft.genre_fusion || ''].filter(Boolean))].filter(value => value !== settingsDraft.genre)} onChange={value => selectFusionTheme(value || '')} /></div>
+              <div className="creative-brief-pair">
+                <NumberInput label="目标集数" min={1} max={200} value={settingsDraft.episode_count || ''} placeholder="自动"
+                  onChange={value => updateSettingsDraft('episode_count', value ? Number(value) : undefined)} />
+                <NumberInput label="单集时长" suffix=" 秒" min={5} max={600} value={settingsDraft.episode_duration || ''} placeholder="自动"
+                  onChange={value => updateSettingsDraft('episode_duration', value ? Number(value) : undefined)} />
+              </div>
+              <TextInput label="视觉画风" value={settingsDraft.visual_style || ''} onChange={event => updateSettingsDraft('visual_style', event.currentTarget.value)} />
+              <Select label="画幅" value={settingsRatio} allowDeselect={false}
+                data={[{ value: '16:9', label: '16:9 横屏' }, { value: '9:16', label: '9:16 竖屏' }]}
+                onChange={value => { if (value === '16:9' || value === '9:16') setSettingsRatio(value) }} />
+            </section> : <>
+            <div className="script-director-settings-hero"><div><span>STORY DNA / 01</span><h1>先确定故事的基调。</h1><p>题材、人物和节奏会共同决定剧本的方向。你可以从一套成熟方案开始，再逐项改写。</p></div><div className="script-director-settings-hero-mark"><strong>01</strong><small>草稿</small></div></div>
+            <section id="script-settings-theme" className="script-director-settings-theme" aria-labelledby="script-settings-theme-heading">
+              <header className="atelier-section-heading">
+                <span aria-hidden="true">01</span>
+                <div><h2 id="script-settings-theme-heading">叙事基因</h2><p>先决定故事落在哪一种情绪里。</p></div>
+              </header>
+              <div className="atelier-theme-layout">
+                <div className="atelier-topic-list" role="group" aria-label="主题材">
+                  {[
+                    ...(settingsDraft.genre && !atelierThemes.includes(settingsDraft.genre) ? [settingsDraft.genre] : []),
+                    ...atelierThemes,
+                  ].map(theme => <UnstyledButton key={theme} type="button" className="atelier-topic" aria-pressed={theme === settingsDraft.genre}
+                    onClick={() => selectTheme(theme)} data-workspace-control="">
+                    <span>{theme}</span>{directorThemeDescriptions[theme] && <small>{directorThemeDescriptions[theme]}</small>}
+                  </UnstyledButton>)}
+                </div>
+                <div className="atelier-theme-stage">
+                  <img src={primaryThemeArtwork} alt="" onError={event => {
+                    if (!event.currentTarget.src.endsWith(neutralThemeArtwork)) event.currentTarget.src = neutralThemeArtwork
+                  }} />
+                  <div className="atelier-theme-copy">
+                    <span>当前主题材</span>
+                    <strong>{settingsDraft.genre || '自定义题材'}</strong>
+                    {directorThemeDescriptions[settingsDraft.genre || ''] && <p>{directorThemeDescriptions[settingsDraft.genre || '']}</p>}
+                    {themeVisuals.status === 'error' && <Button type="button" variant="subtle" size="compact-xs" onClick={themeVisuals.retry}>重试封面匹配</Button>}
+                  </div>
+                  <Popover opened={fusionRailOpen} onChange={setFusionRailOpen} onDismiss={() => setFusionRailOpen(false)} position="top-end" zIndex={420} width={260} withArrow>
+                    <Popover.Target>
+                      <Button type="button" variant="default" className="atelier-fusion" aria-expanded={fusionRailOpen}
+                        aria-label="融合题材" leftSection={<Plus size={16} />} onClick={() => setFusionRailOpen(open => !open)} data-workspace-control="">
+                        融合题材{settingsDraft.genre_fusion && <small>{settingsDraft.genre_fusion}</small>}
+                      </Button>
+                    </Popover.Target>
+                    <Popover.Dropdown>
+                      <Select label="选择融合题材" searchable clearable value={settingsDraft.genre_fusion || null}
+                        data={[...new Set([...atelierThemes, settingsDraft.genre_fusion || ''])].filter(theme => theme && theme !== settingsDraft.genre)}
+                        onChange={value => selectFusionTheme(value || '')} comboboxProps={{ withinPortal: false }} />
+                      {settingsDraft.genre_fusion && <Button type="button" variant="subtle" size="compact-sm" onClick={() => selectFusionTheme('')}>移除融合题材</Button>}
+                    </Popover.Dropdown>
+                  </Popover>
+                </div>
+              </div>
+            </section>
+            </>}
+            <section id={isBrief ? "brief-settings-fields" : "script-settings-fields"} className="script-director-settings-fields" aria-labelledby={isBrief ? "brief-settings-fields-heading" : "script-settings-fields-heading"}>
+              {isBrief ? <header className="script-director-settings-section-heading">
+                <div><strong id="brief-settings-fields-heading">创作要素</strong></div>
+              </header> : <header className="atelier-section-heading">
+                <span aria-hidden="true">02</span>
+                <div><h2 id="script-settings-fields-heading">创作要素</h2><p>没有指定的内容，会在写作时交给模型判断。</p></div>
+              </header>}
+              <div className="script-director-settings-grid">
+                {directorAutoFieldMeta.filter(field => !isBrief || field.key !== 'visual_style').map((field) => <DirectorAutoField
+                  key={field.key}
+                  label={field.label}
+                  value={settingsDraft[field.key] || ''}
+                  placeholder={field.placeholder}
+                  options={directorAutoFieldOptions[field.key]}
+                  icon={field.icon}
+                  open={(!isBrief || !briefAtelierSnapshot) && autoFieldOpen === field.label}
+                  onToggle={() => {
+                    setStructurePickerOpen(false)
+                    setAutoFieldOpen((current) => current === field.label ? null : field.label)
+                  }}
+                  onChange={(value) => updateSettingsDraft(field.key, value)}
+                />)}
+                {isBrief && structurePicker}
+              </div>
+            </section>
+            {!isBrief && <section id="script-settings-structure" className="atelier-structure script-director-settings-grid">
+              <header className="atelier-section-heading">
+                <span aria-hidden="true">03</span><div><h2>结构节奏</h2><p>设定集数与叙事推进。</p></div>
+              </header>
+              {structurePicker}
+            </section>}
+          </div>
+          {!isBrief && <footer className="script-director-settings-modal-foot">
+            <Switch className="script-director-presets-toggle" label="展示爆款预设" checked={showSettingPresets}
+              onChange={event => setShowSettingPresets(event.currentTarget.checked)} />
+            <div>
+              <Button type="button" className="script-director-settings-cancel" onClick={() => closeAtelier()} variant="subtle" data-workspace-control="">取消</Button>
+              <Button type="button" className="script-director-settings-confirm" onClick={() => briefAtelierSnapshot ? closeAtelier(true) : applySettings()}
+                loading={settingsSaving} variant="subtle" data-workspace-control="">确认设定</Button>
+            </div>
+          </footer>}
+        </div>
+        {!isBrief && <aside className="script-director-settings-summary">
+          <div className="script-director-settings-summary-poster" style={{ backgroundImage: `linear-gradient(0deg, var(--fc-surface), transparent 85%), url("${primaryThemeArtwork}")` }}>
+            <div><span>主题材</span><strong>{settingsDraft.genre || '自定义题材'}</strong><small>{settingsDraft.genre_fusion || '未指定融合题材'} / {settingsDraft.visual_style || '画风自动判断'}</small></div>
+          </div>
+          <div className="script-director-settings-summary-list">
+            {[
+              ['受众', settingsDraft.audience || '自动判断'],
+              ['角色', settingsDraft.character_notes || '自动判断'],
+              ['时代', settingsDraft.era || '自动判断'],
+              ['看点', settingsDraft.core_hook || '自动判断'],
+              ['结构', settingsDraft.story_structure || ('自动判断 · ' + (settingsDraft.episode_count || 20) + ' 集')],
+            ].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+          </div>
+          <p>未指定的内容会保留为自动判断，不会提前写入剧本。</p>
+        </aside>}
+
+  </>
+  }
   return <aside
     hidden={hidden}
-    className={`script-director-panel sd-chat${previewOpen && generated ? ' is-reviewing' : ''}${windowLayout.docked ? ' is-docked' : ''}${minimized ? ' is-minimized' : ''}${compactComposer ? ' is-compact' : ''}`}
-    style={{ '--chat-x': `${windowLayout.rect.x}px`, '--chat-y': `${windowLayout.rect.y}px`, '--chat-width': `${windowLayout.rect.width}px`, '--chat-height': `${windowLayout.rect.height}px` } as CSSProperties}
+    className={`script-director-panel sd-chat presentation-${presentation} workspace-${workspace}${previewOpen && generated ? ' is-reviewing' : ''}${windowDocked ? ' is-docked' : ''}${minimized ? ' is-minimized' : ''}${compactComposer ? ' is-compact' : ''}`}
+    style={{ '--chat-x': `${windowRect.x}px`, '--chat-y': `${windowRect.y}px`, '--chat-width': `${windowRect.width}px`, '--chat-height': `${windowRect.height}px`, '--chat-nav-bottom': `${windowViewport.top ?? 0}px`, '--chat-dock-width': `${dockWidth}px` } as CSSProperties}
     data-canvas-overlay
     onKeyDown={event => {
       if (event.key !== 'Escape') return
       if (settingsOpen) {
-        if (autoFieldOpen) setAutoFieldOpen(null)
+        if (fusionRailOpen) setFusionRailOpen(false)
+        else if (autoFieldOpen) setAutoFieldOpen(null)
         else if (structurePickerOpen) setStructurePickerOpen(false)
-        else setSettingsOpen(false)
+        else if (briefAtelierSnapshot || workspace !== 'settings') closeAtelier()
+        else return
       }
       else if (composerMenuOpen) setComposerMenuOpen(false)
       else if (historyOpen) setHistoryOpen(false)
@@ -2967,7 +3062,29 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     aria-label="剧本导演"
     ref={directorPanelRef}
   >
-    <header className="script-director-header" onPointerDown={startWindowGesture} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }}>
+    {presentation === 'floating' && windowDocked && dockResizable && <div className="sd-dock-resize" role="separator" tabIndex={0}
+      aria-label="调整对话侧栏宽度" aria-orientation="vertical" aria-valuemin={dockWidthMinimum} aria-valuemax={dockWidthLimit}
+      aria-valuenow={dockWidth} title="拖动调整对话侧栏宽度"
+      onPointerDown={event => {
+        if (event.button !== 0 || !event.isPrimary) return
+        event.currentTarget.focus()
+        event.currentTarget.setPointerCapture(event.pointerId)
+        dockDragRef.current = { pointer: event.pointerId, x: event.clientX, width: dockWidth }
+      }}
+      onPointerMove={event => {
+        const drag = dockDragRef.current
+        if (drag?.pointer !== event.pointerId) return
+        const width = Math.min(dockWidthLimit, Math.max(dockWidthMinimum, drag.width + drag.x - event.clientX))
+        setWindowLayout(current => ({ ...current, dockWidth: width }))
+      }}
+      onLostPointerCapture={() => { dockDragRef.current = null }}
+      onKeyDown={event => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+        event.preventDefault()
+        const width = Math.min(dockWidthLimit, Math.max(dockWidthMinimum, dockWidth + (event.key === 'ArrowLeft' ? 10 : -10)))
+        setWindowLayout(current => ({ ...current, dockWidth: width }))
+      }} />}
+    <header className="script-director-header" onPointerDown={event => startWindowGesture(event)} onPointerMove={moveWindowGesture} onLostPointerCapture={() => { gestureRef.current = null }}>
       <div className="script-director-title">
         <strong>剧本对话</strong>
         <div className="sd-title-meta"><small>{detail.name || '未命名项目'}</small>
@@ -2982,7 +3099,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
             <Menu.Item leftSection={<Settings2 size={15} />} onClick={openSettings}>剧本设定</Menu.Item>
             <Menu.Item aria-label="项目文档" leftSection={<FileText size={15} />} onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null); setMinimized(false) }}>项目文档 · {artifactCards.length}</Menu.Item>
             <Menu.Divider />
-            <Menu.Item leftSection={<PanelRight size={15} />} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))}>{windowLayout.docked ? '切换为浮窗' : '停靠到右侧'}</Menu.Item>
+            {presentation === 'floating' && <Menu.Item leftSection={<PanelRight size={15} />} onClick={() => setWindowLayout(current => ({ ...current, docked: !current.docked }))}>{windowLayout.docked ? '切换为浮窗' : '停靠到右侧'}</Menu.Item>}
           </Menu.Dropdown>
         </Menu>
         <Button type="button" title={minimized ? '展开对话' : '收起对话'} aria-label={minimized ? '展开对话' : '收起对话'} onClick={() => setMinimized(value => !value)} data-workspace-control="" variant="subtle">{minimized ? <Maximize2 size={16} /> : <Minus size={16} />}</Button>
@@ -3029,7 +3146,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     />}
       {messages.map((message, index) => <Fragment key={message.id}>
         {renderConversationMessage(message)}
-        {(message.id === 'welcome' || index === 0 && !messages.some(item => item.id === 'welcome')) && sourceTaskMessage}
+        {workspace !== 'source' && (message.id === 'welcome' || index === 0 && !messages.some(item => item.id === 'welcome')) && sourceTaskMessage}
       </Fragment>)}
     {(!!artifactCards.length || hasSavedScript && detail.script.scenes.length > 0) && <section className="sd-deliverables" aria-label="创作成果">
       <header><span>创作成果</span><UnstyledButton type="button" onClick={() => { setArtifactsOpen(true); setWorkflowOpen(false); setReaderKey(null) }}>文档库 <span>{artifactCards.length}</span><ChevronRight size={13} /></UnstyledButton></header>
@@ -3072,7 +3189,7 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         onClick={() => void sendChatMessage(exploreStoryDirectionMessage)} data-workspace-control="" variant="subtle">
         <Lightbulb size={14} aria-hidden="true" />探索故事方向
       </Button>}
-      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} analysisWait={activeFocus === 'all' ? target => sourceReasonForScope(target) : ''} disabled={busy || sourceUploading || sourceOutlineBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
+      <ScriptStageActions script={detail.script} hasSource={Boolean(scriptSource)} outlineIssue={outlineIssue} analysisWait={activeFocus === 'all' ? target => sourceReasonForScope(target) : ''} disabled={busy || sourceAnalysisBusy || sourceUploading || sourceOutlineBlocked || closing || !selectedModel || Boolean(generated && !scriptSaved) || Boolean(draftResolution)} onAction={handleStageAction} />
       {outlineIssue && !busy && !closing && progress.next_stage === 'outline' && !(generated && !scriptSaved) && <span className="sd-creation-progress" role="status">{outlineIssue}</span>}
     </nav>}
     </div>
@@ -3128,12 +3245,14 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
     {!artifactsOpen && !workflowOpen && <>
       <div className="sd-composer-context">
       {canvasNodeSource?.project_id === detail.id && onApplyCanvasNodeProposal && <DirectorCanvasNodeProposal source={canvasNodeSource}
-        modelId={selectedModel?.id || ''} modelName={selectedModel?.name} composerInput={input} initialContext={initialContext}
+        modelId={selectedModel?.id || ''} modelName={selectedModel?.name} textGenerationOptions={reasoning.request.text_generation_options} composerInput={input} initialContext={initialContext}
         disabled={busy || closing} hidden={hidden || minimized} onBusyChange={setCanvasNodeProposalBusy} onApply={onApplyCanvasNodeProposal} />}
-      {activeFocus === 'all' && scriptSource && <DirectorSourceContext source={scriptSource} starting={sourceAnalysisActing} pollError={Boolean(sourcePollError)}><div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
-          <UnstyledButton className="sd-script-source-open" onClick={() => setSourcePreviewOpen(true)} aria-label={`查看${scriptSource.revision ? '当前有效稿' : '原剧本'}：${scriptSource.filename}`}><FileText size={16} /><span><strong>{scriptSource.filename}</strong><small>{scriptSource.revision ? `当前有效稿 · 第 ${scriptSource.revision} 次修订` : '原剧本'} · {scriptSource.content.length.toLocaleString()} 字 · 用于各阶段生成</small></span></UnstyledButton>
-          <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')}>{fileProps => <Button {...fileProps} type="button" variant="subtle" size="xs" loading={sourceUploading} disabled={busy || sourceUploading}>替换</Button>}</FileButton>
-          <ActionIcon aria-label="移除原剧本来源" disabled={busy || sourceUploading} onClick={() => setSourceRemovalOpen(true)} variant="subtle"><X size={14} /></ActionIcon>
+      {activeFocus === 'all' && scriptSource && <DirectorSourceContext source={scriptSource} starting={sourceAnalysisActing} disabled={sourceAnalysisBusy} pollError={Boolean(sourcePollError)}><div className="sd-script-source-container" aria-label="原剧本来源"><div className="sd-script-source">
+          <UnstyledButton className="sd-script-source-open" onClick={() => onWorkspaceChange ? onWorkspaceChange('source') : setSourcePreviewOpen(true)} aria-label={`查看${scriptSource.revision ? '当前有效稿' : '原剧本'}：${scriptSource.filename}`} title={scriptSource.filename}>
+            <FileText size={15} aria-hidden="true" /><span>{scriptSource.filename}</span>
+          </UnstyledButton>
+          <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')} disabled={busy || sourceUploading || sourceAnalysisBusy}>{fileProps => <Button {...fileProps} className="sd-script-source-action" type="button" variant="subtle" size="compact-xs" loading={sourceUploading} disabled={busy || sourceUploading || sourceAnalysisBusy}>替换</Button>}</FileButton>
+          <ActionIcon className="sd-script-source-action" aria-label="移除原剧本来源" disabled={busy || sourceUploading || sourceAnalysisBusy} onClick={() => setSourceRemovalOpen(true)} variant="subtle"><X size={14} /></ActionIcon>
       </div></div></DirectorSourceContext>}
       <DirectorReferences documents={references} disabled={busy} onOpen={setReaderReference} onRemove={key => setReferences(current => current.filter(document => document.key !== key))} />
       {stageTask && <div className="sd-document-task"><span>修订：{stageTask.stage === 'episode' ? `第 ${stageTask.episode_number} 集正文` : stageLabels[stageTask.stage]}</span><ActionIcon type="button" aria-label="取消阶段修订" disabled={busy} onClick={cancelStageRevision} data-workspace-control=""><X size={13} /></ActionIcon></div>}
@@ -3158,7 +3277,10 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         </Menu.Dropdown>}
         </Menu>}</FileButton>
         {creationOptions}
-        {modelSelector}
+        <div className="sd-composer-models">
+          {textModelSelector}
+          <TaskReasoningSelect reasoning={reasoning} disabled={reasoningDisabled} inline />
+        </div>
         <Button type="button" className="script-director-send" onClick={() => working === 'chat' ? stopChatGeneration() : void sendChatMessage()} disabled={working === 'chat' ? false : busy || sourceUploading || sourceChatBlocked || !conversationLoaded || skillControl.loading || !!skillControl.error || (!input.trim() && !references.length && !scriptSource) || !selectedModel} aria-label={working === 'chat' ? '停止生成' : '发送消息'} title={working === 'chat' ? '停止生成' : sourceChatBlocked ? sourceSendBlockReason : '发送消息'} data-workspace-control="" variant="subtle">{working === 'chat' ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}</Button>
       </div>
       {!availableModels.length && <Button type="button" className="script-director-model-link" onClick={onOpenModels} data-workspace-control="" variant="subtle">还没有可用文本模型，前往模型设置添加</Button>}
@@ -3188,19 +3310,49 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
         {!readerReference && (readerArtifact.isUnsaved ? <Button type="button" className="sd-document-primary" onClick={() => { setReaderKey(null); setPreviewOpen(true) }} data-workspace-control="" variant="subtle">查看待确认草稿<ChevronRight size={14} /></Button> : onOpenDocument && <Button type="button" className="sd-document-primary" onClick={() => { const saved = detail.script.artifacts?.find(artifact => artifactKey(artifact) === readerKey); if (saved) onOpenDocument(saved) }} data-workspace-control="" variant="subtle"><PenLine size={14} />编辑文档</Button>)}
       </footer>
     </section>}
-    {!windowLayout.docked && !minimized && <Button type="button" className="sd-window-resize" aria-label="调整对话窗口大小" title="拖动或用方向键调整窗口大小" onPointerDown={event => startWindowGesture(event, true)} onPointerMove={moveWindowGesture} onPointerUp={() => { gestureRef.current = null }} onPointerCancel={() => { gestureRef.current = null }} onKeyDown={event => {
+    {presentation === 'floating' && !windowDocked && !minimized && <div className="sd-window-resize-strip"><UnstyledButton type="button" className="sd-window-resize" aria-label="调整对话窗口大小" title="拖动或用方向键调整窗口大小" onPointerDown={event => startWindowGesture(event, true)} onPointerMove={moveWindowGesture} onLostPointerCapture={() => { gestureRef.current = null }} onKeyDown={event => {
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
       event.preventDefault()
       const step = event.shiftKey ? 40 : 10
-      setWindowLayout(current => ({ ...current, rect: clampDirectorWindow({ ...current.rect, width: current.rect.width + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0), height: current.rect.height + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0) }, { width: window.innerWidth, height: window.innerHeight }) }))
-    }} data-workspace-control="" variant="subtle" />}
+      setWindowLayout(current => ({ ...current, rect: clampDirectorWindow({ ...windowRect, width: windowRect.width + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0), height: windowRect.height + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0) }, windowViewport) }))
+    }} /></div>}
 
-    <Modal opened={sourcePreviewOpen && !hidden && !!scriptSource} onClose={() => setSourcePreviewOpen(false)} title={`${scriptSource?.revision ? '当前有效稿' : '原剧本'} · ${scriptSource?.filename || ''}`} size="xl" centered zIndex={300}>
-      <p className="sd-source-preview-hint">后续生成与工具读取使用当前有效稿；上传原稿保留供追溯。每个阶段仍需预览并确认保存。</p>
-      {scriptSource && <ScriptSourcePreview source={scriptSource} />}
-      <div className="sd-source-dialog-actions"><Button variant="default" onClick={() => setSourcePreviewOpen(false)}>关闭</Button>
-        {progress.next_stage && <Button disabled={busy || sourceUploading || Boolean(nextStageSourceBlockReason) || !selectedModel || Boolean(generated && !scriptSaved)} title={nextStageSourceBlockReason || undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
+    {workspace === 'source' && <section className="source-reading-workspace" aria-label="原稿与分析" data-v4-page="source">
+      <header className="source-workspace-head">
+        <div>
+          <Button variant="subtle" onClick={() => onWorkspaceChange?.('chat')}>返回剧本</Button>
+          <h1>原稿与分析</h1>
+          {headerControls}
+        </div>
+        <div className="source-workspace-reading-actions">
+          <FileButton onChange={chooseScriptFile} accept={scriptSourceExtensions.join(',')} disabled={busy || sourceUploading || sourceAnalysisBusy}>
+            {props => <Button {...props} variant={scriptSource ? 'default' : 'filled'} size="sm" loading={sourceUploading} disabled={busy || sourceAnalysisBusy}>
+              {scriptSource ? '替换原稿' : '上传原稿'}
+            </Button>}
+          </FileButton>
+          {scriptSource && <Button variant="filled" size="sm" disabled={busy || sourceUploading || sourceAnalysisBusy} onClick={() => setSourcePreviewOpen(true)}>
+            确认当前有效稿
+          </Button>}
+        </div>
+      </header>
+      <aside className="source-workspace-files">
+        <header><strong>来源文档</strong></header>
+        {scriptSource ? <><div className="source-workspace-file"><FileText size={22} /><strong>{scriptSource.filename}</strong><span>{scriptSource.content.length.toLocaleString('zh-CN')} 字 · {scriptSource.revision ? `有效稿 V${scriptSource.revision}` : '上传原稿'}</span></div>{sourceTaskMessage}
+          <Button variant="subtle" color="red" disabled={busy || sourceUploading || sourceAnalysisBusy} onClick={() => setSourceRemovalOpen(true)}>移除来源</Button></>
+          : <p className="source-workspace-empty">上传已有剧本后，可在这里阅读原文、查看剧本地图与分析结果。</p>}
+        <Button variant="default" onClick={() => onWorkspaceChange?.('settings')}>创作设定</Button>
+      </aside>
+      <div className="source-workspace-reading">
+        {sourceLoading ? <p className="source-workspace-empty">正在读取原稿…</p> : scriptSource ? <ScriptSourcePreview source={scriptSource} reading /> : <div className="source-workspace-empty"><FileText size={38} /><h2>还没有来源文档</h2></div>}
       </div>
+    </section>}
+    {navigationDialog}
+    <Modal opened={sourcePreviewOpen && !hidden && !!scriptSource} onClose={() => setSourcePreviewOpen(false)} title={`${scriptSource?.revision ? '当前有效稿' : '原剧本'} · ${scriptSource?.filename || ''}`} size="xl" centered zIndex={300} classNames={{content:'v4-fixed-dialog source-preview-dialog',body:'v4-fixed-dialog-body'}}>
+      <div className="source-preview-dialog-scroll"><p className="sd-source-preview-hint">后续生成与工具读取使用当前有效稿；上传原稿保留供追溯。每个阶段仍需预览并确认保存。</p>
+      {scriptSource && <ScriptSourcePreview source={scriptSource} />}</div>
+      <footer className="sd-source-dialog-actions"><Button variant="default" onClick={() => setSourcePreviewOpen(false)}>关闭</Button>
+        {progress.next_stage && <Button disabled={busy || sourceUploading || Boolean(nextStageSourceBlockReason) || !selectedModel || Boolean(generated && !scriptSaved)} title={nextStageSourceBlockReason || undefined} onClick={() => { setSourcePreviewOpen(false); handleStageAction({ stage: progress.next_stage!, episode_number: progress.next_stage === 'episode' ? progress.next_episode || 1 : 0, operation: 'generate' }) }}>生成{progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : stageLabels[progress.next_stage]}</Button>}
+      </footer>
     </Modal>
     <Modal opened={!!pendingSourceFile && !hidden} onClose={() => setPendingSourceFile(null)} title="替换原剧本来源" centered zIndex={300}>
       <p>将“{scriptSource?.filename}”替换为“{pendingSourceFile?.name}”。已有阶段文档保持不变，后续生成使用新文件；解析失败会保留原来源。</p>
@@ -3211,126 +3363,27 @@ function ScriptDirectorPanel({ detail, models, providers, focusArtifact = 'all',
       <div className="sd-source-dialog-actions"><Button variant="default" disabled={sourceUploading} onClick={() => setSourceRemovalOpen(false)}>取消</Button><Button color="red" loading={sourceUploading} onClick={() => void removeScriptSource()}>移除来源</Button></div>
     </Modal>
 
-    {settingsOpen && <Modal opened={settingsOpen && !hidden} onClose={() => setSettingsOpen(false)} title="剧本设定器" closeOnEscape={!autoFieldOpen && !structurePickerOpen} withCloseButton={false} size="min(1180px, calc(100vw - 32px))" zIndex={300} classNames={{ content: `script-director-settings-modal${showSettingPresets ? '' : ' is-presets-hidden'}`, body: 'script-director-settings-modal-body', header: 'workspace-sr-only' }}>
-
-        {showSettingPresets && <aside className="script-director-settings-presets">
-          <header><div><strong>爆款预设 Top 8</strong></div></header>
-          <div className="script-director-settings-preset-list">
-            {directorSettingPresets.map((preset, index) => <UnstyledButton type="button" key={preset.label} className={settingsDraft.genre === preset.values.genre && (!preset.artwork || settingsPresetArtwork === preset.artwork) ? 'is-active' : ''} style={preset.artwork ? { backgroundImage: `linear-gradient(100deg, #111720e8 0%, #11172072 62%, #11172025 100%), url("${preset.artwork}")` } : undefined} onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setFusionRailOpen(Boolean(preset.values.genre_fusion)); setSettingsPresetArtwork(preset.artwork); setSettingsDraft((current) => ({ ...current, ...preset.values, ...(preset.values.visual_style ? { visual_style_details: undefined } : {}) })) }}>
-              <span className="script-director-preset-copy"><b>{index + 1}</b><span>{preset.label}</span></span>
-            </UnstyledButton>)}
-          </div>
-          <Button type="button" className="script-director-settings-custom" onClick={() => { setAutoFieldOpen(null); setStructurePickerOpen(false); setSettingsPresetArtwork(undefined); setFusionExitActive(Boolean(settingsDraft.genre_fusion)); setFusionRailOpen(false); setSettingsDraft(emptyOptions) }} data-workspace-control="" variant="subtle"><PenLine size={13} />自定义设定</Button>
-        </aside>}
-        <div className="script-director-settings-main">
-          <header className="script-director-settings-modal-head"><div><span>剧本设定器</span></div><ActionIcon type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭剧本设定器" data-workspace-control=""><X size={19} /></ActionIcon></header>
-          <div className="script-director-settings-scroll" onMouseDown={(event) => {
-            const target = event.target as HTMLElement
-            if (!target.closest('.script-director-structure-picker') && !target.closest('.script-director-structure-popover')) setStructurePickerOpen(false)
-            if (!target.closest('.script-director-auto-field') && !target.closest('.script-director-auto-popover')) setAutoFieldOpen(null)
-          }}>
-            <section className="script-director-settings-theme" aria-labelledby="script-settings-theme-heading">
-              <header className="script-director-settings-section-heading">
-                <div><strong id="script-settings-theme-heading">故事题材</strong><span>选择主题类型，也可以添加融合题材</span></div>
-              </header>
-              <div className={`script-director-settings-theme-layout${fusionRailOpen || fusionExitActive ? ' has-fusion-rail' : ''}`}>
-                <div className="script-director-theme-rail-column">
-                  <InfiniteThemeRail
-                    items={directorThemeChoices}
-                    selected={isScriptThemeCategory(settingsDraft.genre || '') ? settingsDraft.genre! : '其他'}
-                    side="primary"
-                    activeArtwork={settingsPresetArtwork === directorTop8Artwork ? undefined : settingsPresetArtwork}
-                    onSelect={selectTheme}
-                  />
-                </div>
-                <div className="script-director-theme-stage">
-                  <div className={`script-director-theme-orbit${settingsDraft.genre_fusion || fusionExitActive ? ' has-fusion' : ''}`}>
-                    <ScriptThemeWaterCanvas active={!hidden && !minimized} primary={settingsDraft.genre || ''} fusion={settingsDraft.genre_fusion || ''} primaryArtwork={primaryThemeArtwork} fusionArtwork={fusionThemeArtwork} onFusionSettled={() => setFusionExitActive(false)} />
-                    {settingsDraft.genre_fusion ? <div className="script-director-theme-fusion-wrap">
-                      <span
-                        className={`script-director-theme-circle is-fusion tone-${directorThemeTone(settingsDraft.genre_fusion)}`}
-                        style={{ '--theme-artwork': `url("${fusionThemeArtwork}")` } as CSSProperties}
-                      >
-                        {directorArtworkForTheme(settingsDraft.genre_fusion) && <span className="script-director-theme-cover" aria-hidden="true" />}
-                        <span>{settingsDraft.genre_fusion}</span>
-                      </span>
-                      <ActionIcon type="button" aria-label="移除融合题材" onClick={clearFusionTheme} data-workspace-control=""><Minus size={14} strokeWidth={1.8} /></ActionIcon>
-                    </div>
-                    : !fusionExitActive && <UnstyledButton type="button" className="script-director-theme-fusion-trigger" aria-expanded={fusionRailOpen} onClick={() => {
-                      setAutoFieldOpen(null)
-                      setStructurePickerOpen(false)
-                      setSettingsDraft((current) => {
-                        const primary = current.genre || defaultPrimaryTheme
-                        const fusion = current.genre_fusion || (
-                          directorThemeChoices.find((theme) => theme !== primary && theme !== '其他') || defaultFusionTheme
-                        )
-                        return { ...current, genre: primary, genre_fusion: fusion }
-                      })
-                      setFusionRailOpen(true)
-                    }}><span>＋</span><small>融合题材</small></UnstyledButton>}
-                    {settingsDraft.genre_fusion && <>
-                      <span className="script-director-theme-liquid-gel" aria-hidden="true" />
-                      <span className="script-director-theme-fusion-bridge" aria-hidden="true" />
-                    </>}
-                  </div>
-                </div>
-                {fusionRailOpen && <InfiniteThemeRail
-                    items={directorThemeChoices.filter((theme) => theme !== settingsDraft.genre)}
-                    selected={isScriptThemeCategory(settingsDraft.genre_fusion || '') ? settingsDraft.genre_fusion! : '其他'}
-                    side="fusion"
-                    onSelect={selectFusionTheme}
-                  />}
-              </div>
-              <div className="script-director-theme-selection" aria-label="当前题材">
-                {[
-                  { label: '主题材', name: settingsDraft.genre || '自定义题材', category: themeVisuals.primary, artwork: primaryThemeArtwork },
-                  ...(settingsDraft.genre_fusion ? [{ label: '融合题材', name: settingsDraft.genre_fusion, category: themeVisuals.fusion, artwork: fusionThemeArtwork }] : []),
-                ].map(theme => <div className="script-director-theme-selected" key={theme.label}>
-                  <img src={theme.artwork} alt="" onError={event => { if (!event.currentTarget.src.endsWith(neutralThemeArtwork)) event.currentTarget.src = neutralThemeArtwork }} />
-                  <div><span className="script-director-theme-selected-label">{theme.label}</span>
-                    <div className="script-director-theme-selected-name"><strong>{theme.name}</strong>{theme.name !== '自定义题材' && !isScriptThemeCategory(theme.name) && <small>自定义</small>}</div>
-                    {!isScriptThemeCategory(theme.name) && <span className="script-director-theme-cover-note" aria-live="polite">
-                      {theme.category ? `封面参考：${theme.category}` : themeVisuals.status === 'pending' ? '正在匹配封面…' : '使用中性封面'}
-                    </span>}
-                  </div>
-                </div>)}
-                {themeVisuals.status === 'error' && <Button className="script-director-theme-match-retry" type="button" onClick={themeVisuals.retry} data-workspace-control="" variant="subtle"><RotateCcw size={12} />重试封面匹配</Button>}
-              </div>
-            </section>
-            <section className="script-director-settings-fields" aria-labelledby="script-settings-fields-heading">
-              <header className="script-director-settings-section-heading">
-                <div><strong id="script-settings-fields-heading">创作要素</strong><span>未指定的内容将由模型结合剧本判断</span></div>
-              </header>
-              <div className="script-director-settings-grid">
-                {directorAutoFieldMeta.map((field) => <DirectorAutoField
-                  key={field.key}
-                  label={field.label}
-                  value={settingsDraft[field.key] || ''}
-                  placeholder={field.placeholder}
-                  options={directorAutoFieldOptions[field.key]}
-                  icon={field.icon}
-                  open={autoFieldOpen === field.label}
-                  onToggle={() => {
-                    setStructurePickerOpen(false)
-                    setAutoFieldOpen((current) => current === field.label ? null : field.label)
-                  }}
-                  onChange={(value) => updateSettingsDraft(field.key, value)}
-                />)}
-                <DirectorStructurePicker
-                  value={settingsDraft.story_structure || ''}
-                  episodeCount={settingsDraft.episode_count}
-                  open={structurePickerOpen}
-                  onToggle={() => { setAutoFieldOpen(null); setStructurePickerOpen((value) => !value) }}
-                  onChange={(value) => updateSettingsDraft('story_structure', value)}
-                  onEpisodeCountChange={(value) => updateSettingsDraft('episode_count', value)}
-                />
-              </div>
-            </section>
-          </div>
-          <footer className="script-director-settings-modal-foot"><Switch className="script-director-presets-toggle" label="展示爆款预设" checked={showSettingPresets} onChange={event => setShowSettingPresets(event.currentTarget.checked)} /><div><Button type="button" className="script-director-settings-cancel" onClick={() => setSettingsOpen(false)} data-workspace-control="" variant="subtle">取消</Button><Button type="button" className="script-director-settings-confirm" onClick={applySettings} data-workspace-control="" variant="subtle">确认设定</Button></div></footer>
+    {workspace === 'settings' && <section className="creative-brief-workspace" aria-label="创作设定" data-v4-page="brief">
+      <header className="creative-brief-head">
+        <Button type="button" className="workspace-project-back" variant="subtle" size="xs" leftSection={<ChevronLeft size={15} />}
+          onClick={() => onWorkspaceChange?.('chat')} aria-label="返回剧本" title={detail.name}>
+          {detail.name}
+        </Button>
+        <h1>创作设定</h1>
+        <div>
+          {headerControls}
+          <Button type="button" variant="subtle" disabled={settingsSaving} onClick={() => onWorkspaceChange?.('source')}>导入已有剧本</Button>
+          <Button type="button" onClick={applySettings} loading={settingsSaving} disabled={!settingsName.trim()}>保存并继续创作</Button>
         </div>
-
-    </Modal>}
+      </header>
+      {renderSettingsContent(true)}
+    </section>}
+    <Modal opened={!hidden && (workspace === 'settings' ? !!briefAtelierSnapshot : settingsOpen)} centered yOffset={8}
+      onClose={() => closeAtelier()} title="剧本设定器" closeOnEscape={!autoFieldOpen && !structurePickerOpen && !fusionRailOpen}
+      withCloseButton size="min(1240px, calc(100vw - 16px))" zIndex={300}
+      classNames={{ content: 'script-director-settings-modal', body: 'script-director-settings-modal-body', header: 'script-director-settings-modal-header' }}>
+      {renderSettingsContent(false)}
+    </Modal>
   </aside>
 }
 

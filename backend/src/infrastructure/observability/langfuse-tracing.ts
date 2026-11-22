@@ -138,6 +138,9 @@ export function createLangfuseTracer(config: LangfuseConfig, dependencies: Depen
   })
   const safeMetadata = (source: Record<string, unknown>) => {
     const result: Record<string, unknown> = {}
+    const reasoning = ['inherit', 'auto', 'fixed', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'configured', 'upstream']
+    for (const key of ['reasoning_requested', 'reasoning_effective'] as const) if (typeof source[key] === 'string' && reasoning.includes(source[key])) result[key] = source[key]
+    if (typeof source.reasoning_source === 'string' && ['task', 'model_default', 'upstream', 'policy'].includes(source.reasoning_source)) result.reasoning_source = source.reasoning_source
     for (const key of numbers) if (finite(source[key])) result[key] = source[key]
     for (const key of protocolCounts) if (finite(source[key]) && Number.isSafeInteger(source[key])) result[key] = source[key]
     for (const [key, values] of [['trace_stage', stages], ['request_purpose', purposes], ['transport_kind', transports], ['failure_reason', failures], ['delivery', deliveries]] as const) if (typeof source[key] === 'string' && values.has(source[key])) result[key] = source[key]

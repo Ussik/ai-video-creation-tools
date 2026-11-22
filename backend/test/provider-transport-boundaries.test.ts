@@ -226,6 +226,22 @@ test('an unclosed SSE event stops before a trailing partial line receives its ne
 })
 
 for (const protocol of ['responses', 'chat_completions', 'anthropic_messages'] as const) {
+  test(`${protocol}: source analysis waits ten minutes for headers`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const wire = delayedHeaders(t)
+    const pending = streamText(model(protocol), provider, {
+      prompt: 'source', structured_output: { ...contract, name: 'script_source_map_page' },
+    })
+    const rejected = assert.rejects(pending, issue => issue instanceof TextProviderError &&
+      issue.upstreamCode === 'headers_timeout' && issue.delivery === 'unknown')
+    await flush()
+    t.mock.timers.tick(10 * 60_000 - 1)
+    assert.equal(wire.signal().aborted, false)
+    t.mock.timers.tick(1)
+    await rejected
+    assert.equal(wire.calls(), 1)
+  })
+
   test(`${protocol}: reasoning stream accepts late headers beyond two minutes and completes normally`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     const wire = delayedHeaders(t)

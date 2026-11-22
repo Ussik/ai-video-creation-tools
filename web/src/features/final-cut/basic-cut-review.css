@@ -11,3 +11,18 @@
 .basic-cut-review-preview .timeline-preview-stage { max-height: 330px; }
 .basic-cut-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 @media (max-width: 600px) { .basic-cut-review-controls, .basic-cut-review-frames { grid-template-columns: minmax(0, 1fr); } }
+
+.basic-cut-review-modal .mantine-Modal-content { display:flex; flex-direction:column; max-height:calc(100dvh - var(--modal-y-offset,20px) * 2); overflow:hidden; }
+.basic-cut-review-modal .mantine-Modal-header { flex:none; }
+.basic-cut-review-modal .mantine-Modal-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0; overflow:hidden; }
+.basic-cut-review-modal .basic-cut-review { display:flex; flex-direction:column; flex:1; min-height:0; gap:0; }
+.basic-cut-review-scroll { display:grid; align-content:start; gap:18px; flex:1; min-height:0; padding:22px 24px 26px; overflow:auto; overscroll-behavior:contain; }
+.basic-cut-review-footer { display:flex; flex-direction:column; gap:16px; flex:none; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+.basic-cut-review-footer .mantine-Checkbox-label { color:var(--fc-text-secondary); font-size:12px; line-height:1.6; }
+.basic-cut-review-modal .basic-cut-review-actions { padding:0; border:0; }
+@media (max-width:600px) {
+ .basic-cut-review-scroll { padding:18px; }
+ .basic-cut-review-footer { padding:14px 18px; gap:12px; }
+ .basic-cut-review-actions .mantine-Button-root { min-width:0; height:auto; min-height:34px; padding-block:7px; flex:1 1 auto; }
+ .basic-cut-review-actions .mantine-Button-label { white-space:normal; line-height:1.5; }
+}

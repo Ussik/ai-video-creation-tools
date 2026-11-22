@@ -1304,10 +1304,10 @@
    document for backwards-compatible editing. */
 .script-editor-fullscreen .sidebar { display: none; }
 .script-editor-fullscreen .main-content { min-width: 0; overflow: hidden; }
-.script-editor-fullscreen .script-director-panel { display: none; }
+.script-editor-fullscreen .script-director-panel[hidden] { display: none; }
 .script-editor-fullscreen .script-page-host.script-page-overlay {
   position: fixed;
-  inset: 0 !important;
+  inset: 0;
   z-index: 90;
   overflow: auto;
   border: 0;

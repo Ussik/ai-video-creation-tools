@@ -15,6 +15,11 @@ import './features/canvas/canvas-generation-controls.css'
 import './shared/ui/creation-surfaces.css'
 import './shared/ui/media/studio-media-player.css'
 import './styles/theme.css'
+import './styles/premium-workspaces.css'
+import './features/projects/project-home.css'
+import './styles/premium-dialogs.css'
+import './styles/project-workspaces.css'
+import './styles/prototype-v4-overrides.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

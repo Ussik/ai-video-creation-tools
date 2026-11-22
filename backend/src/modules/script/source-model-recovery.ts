@@ -38,6 +38,24 @@ export function initSourceModelRecovery() {
 export function sourceModelRecoveryBlocked(projectId: string, runIds: string[]): boolean {
   return sourceRequestBlockers(projectId, runIds).length > 0
 }
+
+/** Recover lineage for a replacement run that replayed a directory request
+ * identity previously dispatched by another run. The scope binds the source,
+ * model and configuration. Match the shared request key as well as the scope. */
+export function sourceBlockedDirectoryRunIds(projectId: string, runId: string): string[] {
+  const candidates = db.prepare(`SELECT DISTINCT pending.run_id, pending.scope, pending.request_key
+    FROM source_model_requests pending
+    JOIN source_request_dispatch_links prior
+      ON prior.project_id=pending.project_id AND prior.scope=pending.scope AND prior.run_id=pending.run_id
+    JOIN source_request_dispatch_links current
+      ON current.project_id=prior.project_id AND current.scope=prior.scope AND current.request_key=prior.request_key
+    WHERE pending.project_id=? AND current.run_id=? AND pending.run_id<>? AND pending.state='dispatched'`)
+    .all(projectId, runId, runId) as Array<{ run_id: string; scope: string; request_key: string }>
+  const blockedRuns = sourceRequestBlockers(projectId, candidates.map(candidate => candidate.run_id))
+    .filter(blocker => candidates.some(candidate => candidate.run_id === blocker.run_id &&
+      candidate.scope === blocker.scope && candidate.request_key === blocker.request_key))
+  return [...new Set(blockedRuns.map(blocker => blocker.run_id))]
+}
 export function markSourceModelRun(projectId: string, id: string) {
   initSourceModelRecovery()
   db.prepare('INSERT OR IGNORE INTO source_model_runs (id,project_id) VALUES (?,?)').run(id, projectId)

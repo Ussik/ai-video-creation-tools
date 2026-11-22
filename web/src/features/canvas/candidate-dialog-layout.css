@@ -1,0 +1,20 @@
+/* The gallery scrolls independently; choosing or archiving stays in reach. */
+.pc-confirm-modal.pc-candidate-modal.mantine-Modal-content,
+.pc-confirm-modal.pc-shot-candidate-modal.mantine-Modal-content { display:flex; flex-direction:column; max-height:calc(100dvh - var(--modal-y-offset,20px) * 2); overflow:hidden; }
+.pc-confirm-modal.pc-candidate-modal .pc-confirm-modal-header,
+.pc-confirm-modal.pc-shot-candidate-modal .pc-confirm-modal-header { flex:none; }
+.pc-confirm-modal.pc-candidate-modal .pc-confirm-modal-body,
+.pc-confirm-modal.pc-shot-candidate-modal .pc-confirm-modal-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:0; overflow:hidden; }
+.pc-candidate-modal .pc-candidate-manager,
+.pc-shot-candidate-modal .pc-shot-candidate-manager { display:flex; flex-direction:column; flex:1; min-height:0; gap:0; }
+.pc-candidate-scroll,
+.pc-shot-candidate-scroll { display:grid; align-content:start; flex:1; min-height:0; gap:16px; padding:22px 24px 26px; overflow:auto; overscroll-behavior:contain; }
+.pc-candidate-modal .pc-candidate-manager > .pc-candidate-actions,
+.pc-shot-candidate-modal .pc-shot-candidate-manager > .pc-shot-candidate-actions { flex:none; margin:0; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+@media (max-width:650px) {
+ .pc-candidate-scroll, .pc-shot-candidate-scroll { padding:18px; }
+ .pc-candidate-modal .pc-candidate-manager > .pc-candidate-actions,
+ .pc-shot-candidate-modal .pc-shot-candidate-manager > .pc-shot-candidate-actions { padding:14px 18px; }
+ .pc-candidate-actions .mantine-Button-root, .pc-shot-candidate-actions .mantine-Button-root { min-width:0; height:auto; min-height:34px; padding-block:7px; }
+ .pc-candidate-actions .mantine-Button-label, .pc-shot-candidate-actions .mantine-Button-label { white-space:normal; line-height:1.5; }
+}

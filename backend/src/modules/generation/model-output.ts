@@ -1,6 +1,6 @@
 import { catalogOutputCandidate } from './catalog-output-candidate.js'
 import { sourceStructuredPolicy } from './source-structured-policy.js'
-import { automaticOutputRecoveryActive, automaticOutputRecoveryCompleted, reserveAutomaticOutputRecovery } from './automatic-output-recovery.js'
+import { automaticOutputRecoveryActive, automaticOutputRecoveryCompleted, reserveAutomaticOutputRecovery, type AutomaticOutputRecoveryContext } from './automatic-output-recovery.js'
 import { recoverStageContentSyntax } from './stage-content-syntax.js'
 import { recoverUniqueQuotedLines } from './model-output-syntax-repair.js'
 import { currentStructuredOutputCheckpointFactory, type StructuredOutputCheckpoint, type StructuredOutputPersistence } from './model-output-checkpoints.js'
@@ -335,7 +335,7 @@ export function applyOutputContract(body: unknown, protocol: string | undefined,
 /** Fixed read-only model tasks get one bounded format correction and at most
  * one transport retry, sharing a deadline and three-attempt budget. */
 export async function generateStructuredOutput<T>(name: string, schema: z.ZodType<T>, generate: StructuredGenerator, prompt: string,
-  options: { context?: ModelRequestContext; signal?: AbortSignal; validate?: (value: T) => void; diagnoseInvalid?: (value: unknown) => readonly string[]; onAttempt?: (attempt: number, diagnostics?: string) => void; onRetry?: (attempt: number, delayMs: number) => void; budgetMs?: number; correctionInstructions?: string; correctionContext?: 'response_only'; minimalCorrectionContext?: boolean; businessCorrectionContext?: (error: unknown) => string; projectExtraFields?: readonly string[]; structuralRepair?: boolean; structuralRepairContext?: (plan: StructuralRepairPlan) => StructuralRepairLocalContext | undefined; stopOnBusinessError?: boolean; maxAttempts?: 1 | 2; requestSchema?: z.ZodType; planLocalRepair?: StructuredOutputLocalPlanner; planLocalRepairOnUnmatchedRoot?: boolean; planSyntaxRepair?: (raw: string) => StructuredOutputLocalRepair | undefined; recoverContentSyntax?: boolean; recoverUniqueSyntax?: boolean; recoverCompletedSyntax?: boolean; localSyntaxOnly?: boolean; localRepairOnly?: boolean; completedOnly?: boolean } & OutputPersistence = {}): Promise<T> {
+  options: { context?: ModelRequestContext; recoveryContext?: AutomaticOutputRecoveryContext; signal?: AbortSignal; validate?: (value: T) => void; diagnoseInvalid?: (value: unknown) => readonly string[]; onAttempt?: (attempt: number, diagnostics?: string) => void; onRetry?: (attempt: number, delayMs: number) => void; retryTransport?: boolean; budgetMs?: number; correctionInstructions?: string; correctionContext?: 'response_only'; minimalCorrectionContext?: boolean; businessCorrectionContext?: (error: unknown) => string; projectExtraFields?: readonly string[]; structuralRepair?: boolean; structuralRepairContext?: (plan: StructuralRepairPlan) => StructuralRepairLocalContext | undefined; stopOnBusinessError?: boolean; maxAttempts?: 1 | 2; requestSchema?: z.ZodType; planLocalRepair?: StructuredOutputLocalPlanner; planLocalRepairOnUnmatchedRoot?: boolean; planSyntaxRepair?: (raw: string) => StructuredOutputLocalRepair | undefined; recoverContentSyntax?: boolean; recoverUniqueSyntax?: boolean; recoverCompletedSyntax?: boolean; localSyntaxOnly?: boolean; localRepairOnly?: boolean; completedOnly?: boolean } & OutputPersistence = {}): Promise<T> {
   if (automaticOutputRecoveryActive() && isSourceAnalysisContract(name)) options = { ...sourceStructuredPolicy(), structuralRepair: true, ...options, localRepairOnly: true }
   if (!options.checkpoint) {
     const factory = currentStructuredOutputCheckpointFactory()
@@ -356,7 +356,7 @@ export async function generateStructuredOutput<T>(name: string, schema: z.ZodTyp
     if (value === undefined) throw new CompletedOutputReplayMiss('没有精确匹配的已完成结构化响应')
     return value
   } : generate
-  const request = context.policy.readOnly && options.maxAttempts !== 1 ? retryReadOnlyGeneration(generator, { signal: options.signal, onRetry: options.onRetry, discardIncompleteOutput,
+  const request = context.policy.readOnly && options.maxAttempts !== 1 && options.retryTransport !== false ? retryReadOnlyGeneration(generator, { signal: options.signal, onRetry: options.onRetry, discardIncompleteOutput,
     retryTerminatedOutput: (isSourceAnalysisContract(name) || ['script_draft_workset_decisions', 'script_draft_workset_candidate', 'script_draft_workset_source'].includes(name)) && !['tool', 'paid'].includes(context.policy.recovery) }) : generator
   let formatRound = 1, correctionKind: 'format' | 'business' = 'format'
   const scoped: StructuredGenerator = (text, contract) => {
@@ -401,7 +401,7 @@ export async function generateStructuredOutput<T>(name: string, schema: z.ZodTyp
   }
 }
 async function structuredOutput<T>(name: string, schema: z.ZodType<T>, generate: StructuredGenerator, prompt: string,
-  options: { onCorrectionKind?: (kind: 'format' | 'business') => void; signal?: AbortSignal; validate?: (value: T) => void; diagnoseInvalid?: (value: unknown) => readonly string[]; onAttempt?: (attempt: number, diagnostics?: string) => void; correctionInstructions?: string; correctionContext?: 'response_only'; minimalCorrectionContext?: boolean; businessCorrectionContext?: (error: unknown) => string; projectExtraFields?: readonly string[]; structuralRepair?: boolean; structuralRepairContext?: (plan: StructuralRepairPlan) => StructuralRepairLocalContext | undefined; stopOnBusinessError?: boolean; maxAttempts?: 1 | 2; requestSchema?: z.ZodType; planLocalRepair?: StructuredOutputLocalPlanner; planLocalRepairOnUnmatchedRoot?: boolean; planSyntaxRepair?: (raw: string) => StructuredOutputLocalRepair | undefined; recoverContentSyntax?: boolean; recoverUniqueSyntax?: boolean; recoverCompletedSyntax?: boolean; localSyntaxOnly?: boolean; localRepairOnly?: boolean; completedOnly?: boolean } & OutputPersistence): Promise<T> {
+  options: { recoveryContext?: AutomaticOutputRecoveryContext; onCorrectionKind?: (kind: 'format' | 'business') => void; signal?: AbortSignal; validate?: (value: T) => void; diagnoseInvalid?: (value: unknown) => readonly string[]; onAttempt?: (attempt: number, diagnostics?: string) => void; correctionInstructions?: string; correctionContext?: 'response_only'; minimalCorrectionContext?: boolean; businessCorrectionContext?: (error: unknown) => string; projectExtraFields?: readonly string[]; structuralRepair?: boolean; structuralRepairContext?: (plan: StructuralRepairPlan) => StructuralRepairLocalContext | undefined; stopOnBusinessError?: boolean; maxAttempts?: 1 | 2; requestSchema?: z.ZodType; planLocalRepair?: StructuredOutputLocalPlanner; planLocalRepairOnUnmatchedRoot?: boolean; planSyntaxRepair?: (raw: string) => StructuredOutputLocalRepair | undefined; recoverContentSyntax?: boolean; recoverUniqueSyntax?: boolean; recoverCompletedSyntax?: boolean; localSyntaxOnly?: boolean; localRepairOnly?: boolean; completedOnly?: boolean } & OutputPersistence): Promise<T> {
   const original = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as JsonSchema
   // Some code-owned wire contracts select source IDs and normalize into the
   // canonical domain schema. Both binding and prompt use the actual wire schema.
@@ -447,7 +447,7 @@ async function structuredOutput<T>(name: string, schema: z.ZodType<T>, generate:
     const recoveryTask = fingerprint([name, inputHash || prompt])
     const finishRecovery = !options.completedOnly && !blockedCorrection && !blockedInitial &&
       (correction || /_(?:evidence|boundary|character)_repair$/.test(name))
-      ? reserveAutomaticOutputRecovery(recoveryTask, text, requestContract, failureStatus === 'invalid_business' || /evidence|boundary/.test(name)) : undefined
+      ? reserveAutomaticOutputRecovery(recoveryTask, text, requestContract, failureStatus === 'invalid_business' || /evidence|boundary/.test(name), options.recoveryContext) : undefined
     if (checkpoint && !correction && options.guardInitialDispatch && !options.completedOnly) {
       if (checkpoint.initial_started) throw Object.assign(new Error('上次初始请求已开始且没有完整响应；现场已保留，不能在续接时自动重新提交'), {
         statusCode: 409, code: 'structured_initial_delivery_pending', failure_stage: 'recovery', delivery: 'unknown', retryable: false,
@@ -561,6 +561,11 @@ async function structuredOutput<T>(name: string, schema: z.ZodType<T>, generate:
         }
       }
       const localContract = outputContract(name + '_local_repair', localRepair.schema)
+      // Force local repair contracts to unwrapped mode to avoid double-nesting
+      if (localContract.wrapped) {
+        localContract.wrapped = false
+        localContract.schema = (localContract.schema.properties as Record<string, unknown>)?.result as Record<string, unknown>
+      }
       const localInstruction = `\n【本次局部纠正契约】\n仅返回固定目标补丁；其余完整提案由程序保留。\n${JSON.stringify(localContract.schema)}`
       managedOutputInstructions.set(localContract, { full: localInstruction, native: localInstruction, retainFullSchema: true })
       const patchRaw = await output(localInstruction + '\n' + localRepair.prompt, localContract, true)
@@ -569,7 +574,13 @@ async function structuredOutput<T>(name: string, schema: z.ZodType<T>, generate:
       try {
         // A correction is an explicit complete envelope, never a nested or
         // recovered fragment. The domain planner alone owns its fixed targets.
-        const completePatch = completeStructuredRoot(patchRaw, { allowFenceExplanation: true })
+        // Enable automatic fallback to candidate scanning for local repairs where
+        // the model may have added explanation text before the JSON.
+        const completePatch = completeStructuredRoot(patchRaw, {
+          allowFenceExplanation: true,
+          fallbackToCandidate: true,
+          candidateSchema: localRepair.schema
+        })
         if (!completePatch) throw new SyntaxError('局部纠正必须是完整且孤立的JSON根对象')
         const wire: unknown = completePatch.value
         const unwrapped = localContract.wrapped && wire && typeof wire === 'object' && 'result' in wire ? (wire as JsonSchema).result : wire

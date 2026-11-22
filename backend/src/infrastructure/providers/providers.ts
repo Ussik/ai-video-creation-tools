@@ -9,7 +9,7 @@ import { resolveMediaTaskCapabilities } from '@video-studio/shared/models/media-
 import { validateVideoResult } from '../media/media-result-validation.js'
 import { beforeMediaDispatch, localMediaWriting, localMediaReady, mediaExecutionSignal, MediaDownloadError } from './media-execution.js'
 import { acquireModelChannel, modelChannelIdentity, type ModelChannelLease } from './model-channel.js'
-import { createTextTransportBoundary, textHeadersTimeoutMs, readTextErrorBody, readTextResponseBody } from './text-transport-boundary.js'
+import { createTextTransportBoundary, standardTextHeadersTimeoutMs, textHeadersTimeoutMs, readTextErrorBody, readTextResponseBody } from './text-transport-boundary.js'
 import { assertTextFrameBoundary, createTextFrameBoundary } from './text-frame-boundary.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -32,7 +32,8 @@ import { TextOutputLimitError, TextToolOutputLimitError, TextProviderError, tran
   annotateTextFailure, confirmedContextOverflow, textFailureReason, type TextFailureReason, type TextDeliveryState, type TextOutputLimitReason, type TextOutputLimitUsage, type TextOutputLimitKind } from './text-errors.js'
 import { prepareTextRequest, textRequestTrace, notifyTextRequest, createTextRequestActivity, observeProviderFetch, type ProviderRequestIdentity } from './text-request-plan.js'
 import type { TextContextEstimate } from './text-context.js'
-import { scopeTextCapabilities, textCapabilitiesConfigError, resolveTextCapabilities } from '@video-studio/shared/models/text-capabilities'
+import { textCapabilitiesConfigError, resolveTextCapabilities } from '@video-studio/shared/models/text-capabilities'
+import { currentTaskReasoning, reasoningMetrics } from './task-reasoning.js'
 import { resolveTextApiSettings } from '@video-studio/shared/models/text-api-settings'
 import { beginTextRequest, isTextRequestBudgetError } from './text-request-usage.js'
 import { currentModelRequestContext } from '../../modules/generation/model-task-policy.js'
@@ -167,10 +168,7 @@ function asSettings(model: GenerationModel, provider: GenerationProvider): Setti
   catch { throw new ProviderExecutionError('模型设置不是有效 JSON', { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' }) }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new ProviderExecutionError('模型设置必须是 JSON 对象', { reason: 'configuration', stage: 'prepare', delivery: 'not_sent' })
   if (model.modality === 'text') { const issue = textCapabilitiesConfigError(parsed as Settings); if (issue) throw new Error(issue) }
-  return model.modality === 'text' ? resolveTextApiSettings(scopeTextCapabilities(parsed as Settings, {
-    base_url: typeof (parsed as Settings).api_base_url === 'string' ? (parsed as Settings).api_base_url as string : provider.base_url,
-    protocol: model.protocol ?? '', remote_id: model.remote_id,
-  }), model.protocol ?? '') : parsed as Settings
+  return model.modality === 'text' ? resolveTextApiSettings(currentTaskReasoning(model, provider).settings, model.protocol ?? '') : parsed as Settings
 }
 
 function settingString(settings: Settings, key: string, fallback?: string): string {
@@ -658,7 +656,7 @@ export async function createTextToolTransport(model: GenerationModel, provider: 
   const planned = await prepareTextRequest(settings, body, protocol, { modelId: model.id, purpose: 'tool_decision', url: requestUrl, signal: modelStepSignal(signal),
     headers: key ? { [provider.auth_header || 'Authorization']: `${provider.auth_prefix ?? 'Bearer '}${key}` } : {} })
   body = planned.body as Record<string, unknown>
-  const capacity = planned.capacity
+  const capacity = { ...planned.capacity, ...reasoningMetrics(currentTaskReasoning(model, provider)) }
   const requestBody = JSON.stringify(body)
   const metrics: TextRequestMetrics = { ...textRequestTrace(), ...(settings.structured_output_mode ? { request_structured_mode: settings.structured_output_mode as TextRequestMetrics['request_structured_mode'] } : {}), ...(settings.structured_output_mode ? { structured_strategy_source: (['configured', 'declared', 'default'].includes(String(settings._structured_strategy_source)) ? settings._structured_strategy_source : 'configured') as 'configured' | 'declared' | 'default', structured_enforcement: 'unverified' as const } : {}), model_id: model.id, remote_id: typeof body.model === 'string' ? body.model : model.remote_id, endpoint: new URL(requestUrl).origin + new URL(requestUrl).pathname, delivery: 'not_sent', request_bytes: Buffer.byteLength(requestBody), request_purpose: currentModelRequestContext()?.policy.purpose ?? 'tool_decision', ...outputLimitMetrics(body, protocol), ...capacity }
   const startedAt = Date.now()
@@ -900,11 +898,12 @@ export async function streamText(
   // `stream` flag. Add it when the configured template did not specify one;
   // an explicit template value (including false) always wins.
   const requestUrl = apiUrl(settingString(settings, 'api_base_url', provider.base_url), settingString(settings, 'request_path'))
-  const body = applyScriptReviewRequestPolicy(withTextVideoInput(withTextImageInput(applyOutputContract(renderedBody && typeof renderedBody === 'object' && !Array.isArray(renderedBody)
+  const configuredBody = withTextVideoInput(withTextImageInput(applyOutputContract(renderedBody && typeof renderedBody === 'object' && !Array.isArray(renderedBody)
     ? { ...(renderedBody as Record<string, unknown>),
       ...((wireBody !== undefined || 'stream' in (renderedBody as Record<string, unknown>) || settings.stream === false)
         ? {} : { stream: true }) }
-    : renderedBody, model.protocol, settings, request.structured_output), request.images, model.protocol, settings), request.video, model.protocol, settings),
+    : renderedBody, model.protocol, settings, request.structured_output), request.images, model.protocol, settings), request.video, model.protocol, settings)
+  const body = applyScriptReviewRequestPolicy(configuredBody,
     { url: requestUrl, remoteId: model.remote_id, protocol: model.protocol, policy: request.structured_output?.request_policy })
   if (model.protocol === 'chat_completions' && (body as Record<string, unknown>).stream === true && resolveTextCapabilities(settings).compatibility.stream_usage === true) {
     const target = body as Record<string, unknown>; target.stream_options = { ...(target.stream_options as Record<string, unknown> || {}), include_usage: true }
@@ -922,7 +921,7 @@ export async function streamText(
     visualInputTokens: (request.images?.length || 0) * 4096 + (request.video ? Math.ceil(request.video.duration_ms / 1000 * (request.video.fps ?? 1)) * 2048 : 0),
   })
   const finalBody = planned.body
-  const capacity = planned.capacity
+  const capacity = { ...planned.capacity, ...reasoningMetrics(currentTaskReasoning(model, provider), configuredBody !== body) }
   const requestBody = JSON.stringify(finalBody)
   if (request.video && settings.video_input_format === 'doubao_ark' && Buffer.byteLength(requestBody) >= 64 * 1024 * 1024) throw new Error('豆包视频理解请求体需小于 64 MB，请缩小视频片段或降低分辨率')
   const requestTools = Array.isArray((finalBody as Record<string, unknown>).tools) ? (finalBody as Record<string, unknown>).tools as unknown[] : []
@@ -939,7 +938,8 @@ export async function streamText(
     totalMessage: `文本模型请求超时（最长等待 ${Math.round(((wireBody !== undefined || request.structured_output) ? textRequestTimeoutMs : generationStepBudgets.discussion) / 60_000)} 分钟）。请检查草稿后重试或切换文本模型。` })
   const streaming = finalBody.stream === true && settings.stream !== false
   const eventTimeout = !streaming || background || settings.reasoning_effort || finalBody.reasoning_effort || finalBody.reasoning || finalBody.thinking ? textReasoningIdleTimeoutMs : textStreamIdleTimeoutMs
-  const transport = createTextTransportBoundary(scope, { autoStart: false, headersMs: !streaming ? textRequestTimeoutMs : eventTimeout === textReasoningIdleTimeoutMs ? eventTimeout : textHeadersTimeoutMs,
+  const transport = createTextTransportBoundary(scope, { autoStart: false,
+    headersMs: !streaming ? textRequestTimeoutMs : eventTimeout === textReasoningIdleTimeoutMs ? eventTimeout : standardTextHeadersTimeoutMs(request.structured_output?.name),
     firstEventMs: wireBody !== undefined ? textRequestTimeoutMs : eventTimeout,
     idleMs: isUnrestrictedScriptExecution() || wireBody !== undefined ? undefined : eventTimeout })
   let channel: ModelChannelLease | undefined

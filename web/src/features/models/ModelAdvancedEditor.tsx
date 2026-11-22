@@ -211,7 +211,7 @@ export default function ModelAdvancedEditor({model,provider,onApply,onClose}:{mo
   if (modelDraft.modality === 'text') try { textSettings = parsedSettings(modelDraft.settings) } catch { /* The JSON editor remains available for invalid drafts. */ }
 
   return (
-    <Modal opened={true} onClose={() => setModelOpen(false)} title='模型高级设置' size="xl" centered classNames={{ content: 'ms-modal', header: 'ms-modal-header' }}>
+    <Modal opened={true} onClose={() => setModelOpen(false)} title='模型高级设置' size="xl" centered classNames={{ content: 'ms-modal', header: 'ms-modal-header', body: 'ms-modal-frame' }}>
       <div className="ms-modal-body">
         <div className="ms-field-pair">
           <Select label="提供商" placeholder="选择提供商" data={configurableProviders.map((item) => ({ value: item.id, label: item.name }))} value={modelDraft.provider_id || null} onChange={(value) => setModelDraft({ ...modelDraft, provider_id: value || '' })} />
@@ -303,8 +303,8 @@ export default function ModelAdvancedEditor({model,provider,onApply,onClose}:{mo
           </Accordion.Item>
         </Accordion>
         {formError && <Alert color="red" title="模型配置有误">{formError}</Alert>}
-        <div className="ms-modal-actions"><Button variant="default" onClick={() => setModelOpen(false)}>取消</Button><Button className="ms-primary-action" leftSection={<Save size={15} />} disabled={busy || !modelDraft.provider_id || !modelDraft.name.trim() || !modelDraft.remote_id.trim()} onClick={saveModel}>保存模型</Button></div>
       </div>
+        <footer className="ms-modal-actions"><Button variant="default" onClick={() => setModelOpen(false)}>取消</Button><Button className="ms-primary-action" leftSection={<Save size={15} />} disabled={busy || !modelDraft.provider_id || !modelDraft.name.trim() || !modelDraft.remote_id.trim()} onClick={saveModel}>保存模型</Button></footer>
     </Modal>
 
   )

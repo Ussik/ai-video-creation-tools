@@ -133,6 +133,8 @@ test('real App polling retains one canvas beside the hidden storyboard planner',
     const project = container.querySelector<HTMLButtonElement>('.project-card-main')
     assert.ok(project, 'project loads through the real App catalog')
     await act(async () => { project.click() }); await settle()
+    const canvasTab = [...container.querySelectorAll<HTMLButtonElement>('.project-workspace-tabs [role="tab"]')].find(tab => tab.textContent === '画布')!
+    await act(() => canvasTab.click()); await settle()
     assert.equal(container.querySelectorAll('.project-canvas').length, 1, 'real App mounts one canvas per project')
     assert.equal(container.querySelectorAll('.pc-flow').length, 1)
     assert.equal(container.querySelectorAll('.react-flow').length, 1)
@@ -242,13 +244,12 @@ test('editor supplement opens the exact missing outline scope without generating
   try {
     await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
     await act(() => container.querySelector<HTMLButtonElement>('.project-card-main')!.click()); await settle()
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="编辑剧本"]')!.click()); await settle()
     assert.ok(container.querySelector('[aria-label="剧本创作"]'))
     const supplement = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '补齐故事大纲缺项')
     assert.ok(supplement)
     assert.equal(supplement.disabled, false)
     await act(() => supplement.click()); await settle()
-    assert.equal(container.querySelector('[aria-label="剧本创作"]'), null)
+    assert.ok(container.querySelector('[aria-label="剧本创作"]'), 'the V4 workspace keeps the editor beside the director')
     const panel = container.querySelector('[aria-label="分阶段生成面板"]')!
     assert.ok(panel, 'the editor opens the real director configuration')
     assert.equal(panel.querySelector<HTMLInputElement>('input[aria-label="阶段处理方式"]')?.value, '补齐缺失栏目')
@@ -258,8 +259,10 @@ test('editor supplement opens the exact missing outline scope without generating
     assert.match(deliverables, /钩子预设/)
     assert.match(deliverables, /分集大纲/)
     assert.match(panel.textContent!, /已保存栏目的标题和正文保持原样/)
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="打开剧本对话"]')!.click()); await settle()
-    assert.equal(container.querySelector('[aria-label="分阶段生成面板"]'), null, 'a regular conversation opening clears the supplement request')
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="关闭分阶段生成"]')!.click()); await settle()
+    assert.equal(container.querySelector('[aria-label="分阶段生成面板"]'), null, 'closing stage configuration returns to the director conversation without leaving the editor')
+    assert.ok(container.querySelector('[aria-label="剧本创作"]'))
+    assert.ok(container.querySelector('[aria-label="剧本创作对话"]'))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 800)) }); await settle()
     assert.ok(requests.every(request => request.method === 'GET' || isConversationSnapshot(request)), `only chat-history snapshots may be written: ${JSON.stringify(requests.filter(request => request.method !== 'GET' && !isConversationSnapshot(request)))}`)
     assert.equal(detail.script.outline, '# 故事大纲\n\n林晚在车站等候列车。')
@@ -321,7 +324,7 @@ test('task history pauses idle and hidden polling, refreshes on visibility, and 
     await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '任务项目乙'); await settle()
     assert.match(container.querySelector('.task-records')!.textContent!, /还没有素材生成任务记录/)
     await chooseCombobox(container.querySelector<HTMLInputElement>('input[aria-label="切换项目"]')!, '任务项目甲'); await settle()
-    assert.equal(container.querySelectorAll('.task-records tbody tr').length, 1, 'new project scope resets old filters')
+    assert.equal(container.querySelectorAll('.task-records-list > [data-task-id]').length, 1, 'new project scope resets old filters')
     assert.equal(container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.textContent, '全部1')
   } finally {
     await act(() => root.unmount()); container.remove(); frames.clear()
@@ -365,7 +368,7 @@ test('real App resumes video query and download through their original jobs with
     await act(() => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="任务记录"]')!.click()); await settle()
     assert.equal(writes.length, 0, 'mounting history never resumes or recreates generation work')
-    const unknown = [...container.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('原任务可能已被接收'))!
+    const unknown = [...container.querySelectorAll('.task-records-list > [data-task-id]')].find(row => row.textContent?.includes('原任务可能已被接收'))!
     assert.ok(unknown); assert.match(unknown.querySelector('.job-status')!.textContent!, /待核对/)
     assert.doesNotMatch(unknown.textContent!, /重试|继续查询|恢复下载/)
     const action = (label: string) => {

@@ -6,6 +6,7 @@ import type { PromptRequirementEntry } from './canvas-prompt-requirements'
 import { promptSectionDetails, readablePromptSection } from './canvas-prompt-section-details'
 import { promptPreviewText } from './canvas-prompt-preview'
 import CanvasPromptSectionDiff from './CanvasPromptSectionDiff'
+import './canvas-decision-dialogs.css'
 
 type Props = {
   entries: PromptRequirementEntry[]
@@ -43,6 +44,7 @@ export default function CanvasPromptRequirements(props: Props) {
     </footer>
     <Modal opened={opened} onClose={closeFixed} title="固定设定" centered size="lg" zIndex={280} returnFocus={false}
       closeButtonProps={{ 'aria-label': '关闭固定设定' }} className="pc-prompt-fixed-dialog" onKeyDown={event => { if (event.key !== 'Tab') event.stopPropagation() }}>
+      <div className="pc-decision-dialog-scroll">
       <Text size="xs" c="dimmed" mb="md">{visible.length} 项参与本次生成 · 整理正文时原样保留</Text>
       <Accordion multiple defaultValue={visible[0] ? [visible[0].id] : []} chevronPosition="right" className="pc-prompt-fixed-list">
         {visible.map(entry => {
@@ -63,12 +65,15 @@ export default function CanvasPromptRequirements(props: Props) {
           </Accordion.Item>
         })}
       </Accordion>
-      <div className="pc-prompt-fixed-dialog-footer"><Text size="xs" c="dimmed">只读查看，不参与整理草稿编辑</Text><Button variant="default" size="xs" onClick={closeFixed}>返回正文</Button></div>
+      </div>
+      <footer className="pc-decision-dialog-actions pc-prompt-fixed-dialog-footer"><Text size="xs" c="dimmed">只读查看，不参与整理草稿编辑</Text><Button variant="default" size="xs" onClick={closeFixed}>返回正文</Button></footer>
     </Modal>
-    <Modal opened={preview} onClose={() => setPreview(false)} title="完整提示词预览" centered size="lg" zIndex={280}
+    <Modal opened={preview} onClose={() => setPreview(false)} title="完整提示词预览" centered size="lg" zIndex={280} className="pc-prompt-full-dialog"
       closeButtonProps={{ 'aria-label': '关闭完整提示词预览' }} onKeyDown={event => { if (event.key !== 'Tab') event.stopPropagation() }}>
+      <div className="pc-decision-dialog-scroll">
       <Text size="xs" c="dimmed" mb="md">当前正文与全部生效要求，按实际生成顺序组合。</Text>
       <pre className="pc-prompt-full-preview">{fullText}</pre>
+      </div><footer className="pc-decision-dialog-actions"><Button variant="default" size="xs" onClick={() => setPreview(false)}>关闭预览</Button></footer>
     </Modal>
     <CanvasPromptSectionDiff block={comparing} references={props.references} disabled={props.disabled} onResolve={props.onResolve} onClose={() => setComparingId(undefined)} />
   </>

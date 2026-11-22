@@ -18,7 +18,7 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
   prepare(): Promise<Preparation>; restorePreparation(value: unknown): Preparation
   generate(preparation: Preparation): Promise<Candidate>; restoreCandidate(value: unknown): Candidate
   serializeCandidate?(candidate: Candidate): unknown
-  review(candidate: Candidate): Promise<Report>; restoreReport(value: unknown, candidate: Candidate): Report
+  review(candidate: Candidate, phase: 'director_review' | 'recheck'): Promise<Report>; restoreReport(value: unknown, candidate: Candidate): Report
   inconclusive?(preparation: Preparation, candidate: Candidate, repaired: boolean, error: unknown, report?: Report): StoryboardPlanningResult
   hasErrors(report: Report): boolean
   repair(preparation: Preparation, candidate: Candidate, report: Report): Promise<Candidate>
@@ -29,7 +29,9 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
   const assertActive = () => control.signal.throwIfAborted()
   let preparation: Preparation, candidate: Candidate, report: Report, result: StoryboardPlanningResult | undefined
   const recoverReview = (error: unknown, repaired: boolean, previousReport?: Report) => {
-    if (control.signal.aborted || isStoryboardPlanningBudgetError(error) || (error as { statusCode?: number })?.statusCode === 409 || !options.inconclusive) throw error
+    const failure = error as { statusCode?: number; code?: string } | undefined
+    const identityConflict = failure?.statusCode === 409 && failure.code !== 'structured_initial_delivery_pending'
+    if (control.signal.aborted || isStoryboardPlanningBudgetError(error) || identityConflict || !options.inconclusive) throw error
     result = options.inconclusive(preparation, candidate, repaired, error, previousReport)
     return { completed: true }
   }
@@ -57,7 +59,7 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
       if ('report' in steps) report = withModelOperationStage('director_review', () => options.restoreReport(steps.report, candidate))
       else {
         control.stage('reviewing')
-        try { report = await withModelOperationStage('director_review', () => options.review(candidate)); assertActive(); control.retain('report', report) }
+        try { report = await withModelOperationStage('director_review', () => options.review(candidate, 'director_review')); assertActive(); control.retain('report', report) }
         catch (error) { return recoverReview(error, false) }
       }
       return { needsRepair: options.hasErrors(report) }
@@ -79,7 +81,7 @@ export async function runStoryboardPlanningWorkflow<Preparation, Candidate, Repo
       if ('revised_report' in steps) report = withModelOperationStage('recheck', () => options.restoreReport(steps.revised_report, candidate))
       else {
         control.stage('rechecking')
-        try { report = await withModelOperationStage('recheck', () => options.review(candidate)); assertActive(); control.retain('revised_report', report) }
+        try { report = await withModelOperationStage('recheck', () => options.review(candidate, 'recheck')); assertActive(); control.retain('revised_report', report) }
         catch (error) { return recoverReview(error, true, report) }
       }
       return {}

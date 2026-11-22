@@ -7,9 +7,9 @@ import AiOperationRecords from './AiOperationRecords'
 import ModelTaskProgress from './ModelTaskProgress'
 
 /** Retain existing child ledgers; fetch only when their detail entry is opened. */
-export default function BusinessTaskDetails({ task, embedded = false }: { task: BusinessTaskRecord; embedded?: boolean }) {
+export default function BusinessTaskDetails({ task, embedded = false, loadDetails = true }: { task: BusinessTaskRecord; embedded?: boolean; loadDetails?: boolean }) {
   const [opened, setOpened] = useState(false), [record, setRecord] = useState<BusinessTaskRecord>(), [error, setError] = useState('')
-  const active = opened || embedded
+  const active = opened || embedded && loadDetails
   useEffect(() => {
     if (!active) return
     const controller = new AbortController(); setRecord(undefined); setError('')
@@ -21,7 +21,7 @@ export default function BusinessTaskDetails({ task, embedded = false }: { task: 
     <Text fw={600} size="sm">{task.title}</Text>
     <Text size="sm" c="dimmed">{task.summary}</Text>
     {error && <Alert color="red">{error}</Alert>}
-    {!record && !error && <Loader size="xs" aria-label="正在读取任务详情" />}
+    {active && !record && !error && <Loader size="xs" aria-label="正在读取任务详情" />}
     {record?.details?.models.map(model => <Text key={model.id} size="sm">{model.label}：{model.requests} 次请求{model.uncertain_requests ? `，${model.uncertain_requests} 次待核对` : ''}</Text>)}
     {record && <><AiOperationRecords projectId={task.project_id} operationIds={record.operation_ids} />
       <ModelTaskProgress projectId={task.project_id} taskIds={record.model_task_ids} /></>}

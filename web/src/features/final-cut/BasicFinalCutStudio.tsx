@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { ActionIcon, Badge, Button, Checkbox, FileButton, Modal, NumberInput, Select, Tabs, Textarea, TextInput, UnstyledButton } from '@mantine/core'
 import { ArrowDown, ArrowUp, Captions, Check, Copy, Download, Film, Image as ImageIcon, Mic2, Music2, Plus, Save, Trash2, Upload } from 'lucide-react'
 import { editingCutDurationMs, type EditingCut, type EditingCutCaption, type EditingCutClip, type EditingCutSpeech } from '@video-studio/shared/media/editing-cut'
@@ -22,15 +22,18 @@ export interface BasicFinalCutStudioProps {
   onOpenSpeech: (lineId?: string) => void
   onNotice: (message: string) => void
   onDirtyChange?: (dirty: boolean) => void
+  navigation?: ReactNode
+  workspaceControls?: ReactNode
 }
 
 type Pending = { kind: 'select'; id: string } | { kind: 'new' } | { kind: 'reload' }
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`
 const milliseconds = (value: string | number) => Math.round(Number(value || 0) * 1000)
 const freshId = () => crypto.randomUUID()
+const dialogClasses = { content: 'basic-cut-dialog v4-fixed-dialog', body: 'v4-fixed-dialog-body' }
 
 /** All edits live in an independent cut; source shots, assets and speech selections stay read-only. */
-export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh, onOpenSpeech, onNotice, onDirtyChange }: BasicFinalCutStudioProps) {
+export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh, onOpenSpeech, onNotice, onDirtyChange, navigation, workspaceControls }: BasicFinalCutStudioProps) {
   const studio = useRef<HTMLElement>(null)
   const editor = useEditingCuts(detail.id, sourceCanvasId)
   const { draft, dirty, busy } = editor
@@ -45,6 +48,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
   const exactDurations = useRef(new Map<string, number>())
   const [work, setWork] = useState(''), [issue, setIssue] = useState('')
   const [pending, setPending] = useState<Pending | null>(null)
+  const [removeClipId, setRemoveClipId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false), [createName, setCreateName] = useState(''), [copyDraft, setCopyDraft] = useState(false)
   const [importText, setImportText] = useState('')
   const [reviewOpen, setReviewOpen] = useState(false)
@@ -72,6 +76,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
   const assetName = (id: string) => speechAssets.get(id)?.name || names.get(id)?.title || assets.find(asset => asset.id === id)?.filename || '素材已不存在'
   const source = assets.find(asset => asset.id === sourceId)
   const clip = draft?.clips.find(item => item.id === clipId) || draft?.clips[0]
+  const clipToRemove = draft?.clips.find(item => item.id === removeClipId)
   const speech = draft?.speech.find(item => item.id === speechId) || draft?.speech[0]
   const duration = draft ? editingCutDurationMs(draft) : 0
   const inputIssues = draft ? editingCutIssues(draft, assets, exactDurations.current) : []
@@ -96,7 +101,7 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
     setClipId(null); setSpeechId(null); setSourceId(null); setExtraAssets([]); setLocalJobs([])
     setDurations(new Map()); durationRequests.current.clear(); exactDurations.current.clear(); setIssue(''); setMode('cut'); setWork('')
   }, [detail.id])
-  useEffect(() => { setClipId(null); setSpeechId(null); setIssue(''); setMode('cut'); setReviewOpen(false) }, [draft?.id])
+  useEffect(() => { setClipId(null); setSpeechId(null); setRemoveClipId(null); setIssue(''); setMode('cut'); setReviewOpen(false) }, [detail.id, draft?.id])
   useEffect(() => {
     if (!activeExport) return
     const timer = window.setInterval(() => { void callbacks.current.onRefresh().catch(() => {}) }, 2000)
@@ -187,6 +192,12 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
       return { ...cut, clips: next }
     })
   }
+  function removeClip() {
+    if (blocked || !draft || !clipToRemove) return
+    editor.update(cut => cut.id === draft.id ? { ...cut, clips: cut.clips.filter(item => item.id !== clipToRemove.id) } : cut)
+    if (clipId === clipToRemove.id) setClipId(null)
+    setRemoveClipId(null)
+  }
   function execute(next: Pending) {
     if (next.kind === 'select') editor.select(next.id)
     else if (next.kind === 'reload') void editor.load()
@@ -221,13 +232,17 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
   }
 
   return <section ref={studio} className="basic-cut-studio" aria-label="基础成片工作台">
-    <header className="basic-cut-toolbar">
-      <div className="basic-cut-title"><span>独立剪辑</span><Select aria-label="选择独立剪辑" placeholder={editor.loading ? '正在读取剪辑…' : '选择或新建剪辑'} value={draft?.id || null}
+    <header className="delivery-header basic-cut-toolbar" aria-label="独立剪辑工具栏">
+      {navigation}
+      <div className="delivery-actions">
+      <div className="basic-cut-title"><Select aria-label="选择独立剪辑" placeholder={editor.loading ? '正在读取剪辑…' : '选择或新建剪辑'} value={draft?.id || null}
         data={editor.cuts.map(cut => ({ value: cut.id, label: cut.name }))} searchable allowDeselect={false} disabled={blocked || editor.loading} onChange={id => id && request({ kind: 'select', id })} /></div>
       <Button variant="default" leftSection={<Plus size={15} />} disabled={blocked || editor.loading} onClick={() => request({ kind: 'new' })}>新建剪辑</Button>
-      {draft && <><Badge color={dirty ? 'yellow' : 'teal'} variant="light">{dirty ? '有未保存修改' : '已保存'}</Badge><span className="basic-cut-duration">{draft.clips.length} 个片段 · {seconds(duration)}</span>
+      {draft && <><Badge color={dirty ? 'yellow' : 'teal'} variant="light">{dirty ? '有未保存修改' : '已保存'}</Badge>
         <Button variant="default" leftSection={<Save size={15} />} loading={busy} disabled={blocked || !dirty || !!inputIssues.length} onClick={() => void saveDraft()}>保存剪辑</Button>
         <Button leftSection={<Download size={15} />} loading={work === 'export' || !!activeExport} disabled={blocked || !!activeExport || !!exportIssues.length} onClick={() => void exportCut()}>{dirty ? '保存并导出' : '导出视频'}</Button></>}
+      {workspaceControls}
+      </div>
     </header>
     {(editor.error || issue) && <div className="basic-cut-error" role="alert"><span>{issue || editor.error}</span>
       {editor.conflict ? <><Button size="compact-xs" variant="default" onClick={() => request({ kind: 'reload' })}>重新读取服务器版本</Button><Button size="compact-xs" onClick={() => { setCreateName(`${draft?.name || detail.name} · 副本`); setCopyDraft(true); setCreateOpen(true) }}>另存为新剪辑</Button></>
@@ -272,6 +287,21 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
           {activeExport && <p className="basic-cut-export-status" role="status"><span className="status-dot" />{activeExport.status === 'queued' ? '导出任务排队中…' : '正在合成画面、声音与字幕…'}<small>完成后可在这里下载。</small></p>}
           {latestFailed && <div className="basic-cut-error" role="alert">导出失败：{latestFailed.error || '请检查素材后重新导出'}<Button size="compact-xs" variant="default" disabled={blocked || !!exportIssues.length} onClick={() => void exportCut()}>重试导出</Button></div>}
           {exportedAsset && <div className="basic-cut-download"><Check size={16} /><span>{exportIsCurrent ? '本剪辑当前成片' : latestExportRevision === null ? '导出版本未确认 · 请导出当前修改' : '较早版本成片 · 请导出当前修改'}{latestExportRevision !== null ? `（v${latestExportRevision}）` : ''}</span><Button component="a" href={exportedAsset.url} download variant="light" size="xs" leftSection={<Download size={14} />}>下载 MP4</Button></div>}
+          <section className="basic-cut-timeline" aria-label="独立剪辑时间线"><div className="basic-cut-section-head"><h2>入片顺序 <small>{seconds(duration)}</small></h2><BasicCutReviewPanel key={draft.id} cut={draft} assets={assets} durations={durations} disabled={blocked || !!inputIssues.length} onOpenChange={opened => {
+                if (opened) studio.current?.querySelectorAll<HTMLMediaElement>('video, audio').forEach(media => media.pause())
+                setReviewOpen(opened)
+              }}
+              onApply={(fromId, toId, fromOut, toIn, signature) => editor.update(current => {
+                const index = current.clips.findIndex(item => item.id === fromId)
+                if (index < 0 || current.clips[index + 1]?.id !== toId || basicCutReviewSignature(current, fromId, toId, assets) !== signature) return current
+                return { ...current, clips: current.clips.map((item, i) => i === index ? { ...item, out_ms: fromOut } : i === index + 1 ? { ...item, in_ms: toIn } : item) }
+              })} /><span className="basic-cut-help">选择片段调整取段，用箭头改变顺序</span></div>
+            <div className="basic-cut-clip-strip">{draft.clips.map((item, i) => { const asset = assets.find(asset => asset.id === item.asset_id); return <div key={item.id} className={`basic-cut-clip${item.id === clip?.id ? ' is-selected' : ''}`}>
+              <UnstyledButton className="basic-cut-clip-select" aria-label={`编辑片段 ${i + 1}：${item.title}`} onClick={() => { setClipId(item.id); setPanel('clip'); setMode('cut') }}><div className="basic-cut-clip-thumb">{asset?.kind === 'image' ? <img src={asset.url} alt="" /> : asset?.kind === 'video' ? <video src={asset.url} muted playsInline preload="metadata" /> : <ImageIcon size={20} />}</div><strong>{String(i + 1).padStart(2, '0')} · {item.title}</strong><small>{seconds(item.out_ms - item.in_ms)}</small></UnstyledButton>
+              <div className="basic-cut-clip-actions"><ActionIcon variant="subtle" aria-label={`前移片段 ${i + 1}`} disabled={blocked || i === 0} onClick={() => moveClip(item.id, -1)}><ArrowUp size={14} /></ActionIcon><ActionIcon variant="subtle" aria-label={`后移片段 ${i + 1}`} disabled={blocked || i === draft.clips.length - 1} onClick={() => moveClip(item.id, 1)}><ArrowDown size={14} /></ActionIcon><ActionIcon variant="subtle" aria-label={`复制片段 ${i + 1}`} disabled={blocked} onClick={() => { const id = freshId(); editor.update(cut => ({ ...cut, clips: cut.clips.flatMap(part => part.id === item.id ? [part, { ...part, id }] : [part]) })); setClipId(id); setPanel('clip') }}><Copy size={14} /></ActionIcon><ActionIcon variant="subtle" color="red" aria-label={`移除片段 ${i + 1}`} disabled={blocked} onClick={() => setRemoveClipId(item.id)}><Trash2 size={14} /></ActionIcon></div>
+            </div> })}{!draft.clips.length && <p className="basic-cut-help">画面轨道为空，从左侧素材库点击「＋」开始。</p>}</div>
+            <div className="basic-cut-audio-summary">{draft.speech.map((item, i) => <UnstyledButton key={item.id} onClick={() => { setSpeechId(item.id); setPanel('speech') }} className="basic-cut-audio-pill"><Mic2 size={13} /><span>{item.label || `配音 ${i + 1}`}</span><small>{seconds(item.start_ms)}–{seconds(item.start_ms + item.out_ms - item.in_ms)}</small></UnstyledButton>)}{draft.music_asset_id && <span className="basic-cut-music-pill"><Music2 size={13} />{assetName(draft.music_asset_id)}</span>}{!!draft.captions.length && <UnstyledButton className="basic-cut-audio-pill" onClick={() => setPanel('captions')}><Captions size={13} />{draft.captions.length} 句字幕</UnstyledButton>}</div>
+          </section>
         </div>
 
         <aside className="basic-cut-inspector" aria-label="独立剪辑设置">
@@ -298,28 +328,55 @@ export default function BasicFinalCutStudio({ detail, sourceCanvasId, onRefresh,
         </aside>
       </div>
 
-      <section className="basic-cut-timeline" aria-label="独立剪辑时间线"><div className="basic-cut-section-head"><h2>入片顺序 <small>{seconds(duration)}</small></h2><BasicCutReviewPanel key={draft.id} cut={draft} assets={assets} durations={durations} disabled={blocked || !!inputIssues.length} onOpenChange={opened => {
-            if (opened) studio.current?.querySelectorAll<HTMLMediaElement>('video, audio').forEach(media => media.pause())
-            setReviewOpen(opened)
-          }}
-          onApply={(fromId, toId, fromOut, toIn, signature) => editor.update(current => {
-            const index = current.clips.findIndex(item => item.id === fromId)
-            if (index < 0 || current.clips[index + 1]?.id !== toId || basicCutReviewSignature(current, fromId, toId, assets) !== signature) return current
-            return { ...current, clips: current.clips.map((item, i) => i === index ? { ...item, out_ms: fromOut } : i === index + 1 ? { ...item, in_ms: toIn } : item) }
-          })} /><span className="basic-cut-help">选择片段调整取段，用箭头改变顺序</span></div>
-        <div className="basic-cut-clip-strip">{draft.clips.map((item, i) => { const asset = assets.find(asset => asset.id === item.asset_id); return <div key={item.id} className={`basic-cut-clip${item.id === clip?.id ? ' is-selected' : ''}`}>
-          <UnstyledButton className="basic-cut-clip-select" aria-label={`编辑片段 ${i + 1}：${item.title}`} onClick={() => { setClipId(item.id); setPanel('clip'); setMode('cut') }}><div className="basic-cut-clip-thumb">{asset?.kind === 'image' ? <img src={asset.url} alt="" /> : asset?.kind === 'video' ? <video src={asset.url} muted playsInline preload="metadata" /> : <ImageIcon size={20} />}</div><strong>{String(i + 1).padStart(2, '0')} · {item.title}</strong><small>{seconds(item.out_ms - item.in_ms)}</small></UnstyledButton>
-          <div className="basic-cut-clip-actions"><ActionIcon variant="subtle" aria-label={`前移片段 ${i + 1}`} disabled={blocked || i === 0} onClick={() => moveClip(item.id, -1)}><ArrowUp size={14} /></ActionIcon><ActionIcon variant="subtle" aria-label={`后移片段 ${i + 1}`} disabled={blocked || i === draft.clips.length - 1} onClick={() => moveClip(item.id, 1)}><ArrowDown size={14} /></ActionIcon><ActionIcon variant="subtle" aria-label={`复制片段 ${i + 1}`} disabled={blocked} onClick={() => { const id = freshId(); editor.update(cut => ({ ...cut, clips: cut.clips.flatMap(part => part.id === item.id ? [part, { ...part, id }] : [part]) })); setClipId(id); setPanel('clip') }}><Copy size={14} /></ActionIcon><ActionIcon variant="subtle" color="red" aria-label={`移除片段 ${i + 1}`} disabled={blocked} onClick={() => editor.update(cut => ({ ...cut, clips: cut.clips.filter(part => part.id !== item.id) }))}><Trash2 size={14} /></ActionIcon></div>
-        </div> })}{!draft.clips.length && <p className="basic-cut-help">画面轨道为空，从左侧素材库点击「＋」开始。</p>}</div>
-        <div className="basic-cut-audio-summary">{draft.speech.map((item, i) => <UnstyledButton key={item.id} onClick={() => { setSpeechId(item.id); setPanel('speech') }} className="basic-cut-audio-pill"><Mic2 size={13} /><span>{item.label || `配音 ${i + 1}`}</span><small>{seconds(item.start_ms)}–{seconds(item.start_ms + item.out_ms - item.in_ms)}</small></UnstyledButton>)}{draft.music_asset_id && <span className="basic-cut-music-pill"><Music2 size={13} />{assetName(draft.music_asset_id)}</span>}{!!draft.captions.length && <UnstyledButton className="basic-cut-audio-pill" onClick={() => setPanel('captions')}><Captions size={13} />{draft.captions.length} 句字幕</UnstyledButton>}</div>
-      </section>
     </>}
 
-    <Modal opened={!!pending} onClose={() => !blocked && setPending(null)} title="当前剪辑有未保存修改" centered closeOnClickOutside={false}>
-      <p className="basic-cut-help">先保存再继续，或放弃本次修改。已有素材不会被删除。</p><div className="basic-cut-dialog-actions"><Button variant="default" disabled={blocked} onClick={() => setPending(null)}>继续编辑</Button><Button variant="subtle" color="red" disabled={blocked} onClick={() => { if (!pending) return; const next = pending; editor.discard(); setPending(null); execute(next) }}>放弃修改并继续</Button><Button loading={busy} disabled={blocked || !!inputIssues.length || editor.conflict} onClick={() => void (async () => { if (!pending) return; const next = pending; if (await saveDraft()) { setPending(null); execute(next) } })()}>保存后继续</Button></div>
+    <Modal opened={!!pending} onClose={() => !blocked && setPending(null)} title="当前剪辑有未保存修改"
+      centered size={460} closeOnClickOutside={false} closeOnEscape={!blocked} closeButtonProps={{ disabled: blocked }} classNames={dialogClasses}>
+      <div className="basic-cut-dialog-scroll"><p>保存本次修改，或放弃修改后继续。</p></div>
+      <footer className="basic-cut-dialog-actions">
+        <Button variant="subtle" data-autofocus disabled={blocked} onClick={() => setPending(null)}>继续编辑</Button>
+        <Button variant="light" color="red" disabled={blocked} onClick={() => {
+          if (!pending) return
+          editor.discard()
+          setPending(null)
+          execute(pending)
+        }}>放弃修改并继续</Button>
+        <Button loading={busy} disabled={blocked || !!inputIssues.length || editor.conflict} onClick={() => void (async () => {
+          if (pending && await saveDraft()) {
+            setPending(null)
+            execute(pending)
+          }
+        })()}>保存后继续</Button>
+      </footer>
     </Modal>
-    <Modal opened={createOpen} onClose={() => !busy && setCreateOpen(false)} title={copyDraft ? '另存为独立剪辑' : '新建独立剪辑'} centered>
-      <TextInput label="新剪辑名称" value={createName} autoFocus disabled={busy} onChange={event => setCreateName(event.currentTarget.value)} /><p className="basic-cut-help">{copyDraft ? '复制当前草稿的编排和声音，不改写原剪辑。' : '从空时间线开始，使用项目素材自由编排。'}</p><div className="basic-cut-dialog-actions"><Button variant="default" disabled={busy} onClick={() => setCreateOpen(false)}>取消</Button><Button loading={busy} disabled={busy || !createName.trim()} onClick={() => void (async () => { if (await editor.create(createName.trim(), draft?.ratio || detail.ratio, copyDraft)) setCreateOpen(false) })()}>创建剪辑</Button></div>
+    <Modal opened={createOpen} onClose={() => !busy && setCreateOpen(false)} title={copyDraft ? '另存为独立剪辑' : '新建独立剪辑'}
+      centered size={460} closeOnClickOutside={false} closeOnEscape={!busy} closeButtonProps={{ disabled: busy }} classNames={dialogClasses}>
+      <div className="basic-cut-dialog-scroll">
+        <TextInput label="新剪辑名称" value={createName} data-autofocus disabled={busy} onChange={event => setCreateName(event.currentTarget.value)} />
+        {copyDraft && <p>将当前草稿的编排和声音复制到新剪辑。</p>}
+      </div>
+      <footer className="basic-cut-dialog-actions">
+        <Button variant="subtle" disabled={busy} onClick={() => setCreateOpen(false)}>取消</Button>
+        <Button loading={busy} disabled={busy || !createName.trim()} onClick={() => void (async () => {
+          if (await editor.create(createName.trim(), draft?.ratio || detail.ratio, copyDraft)) setCreateOpen(false)
+        })()}>创建剪辑</Button>
+      </footer>
+    </Modal>
+    <Modal opened={!!clipToRemove} onClose={() => setRemoveClipId(null)} title="移除当前片段？"
+      centered size={460} closeOnClickOutside={false} classNames={dialogClasses}>
+      {clipToRemove && <>
+        <div className="basic-cut-dialog-scroll">
+          <div className="basic-cut-dialog-clip">
+            <Film size={20} aria-hidden="true" />
+            <div><strong>{clipToRemove.title}</strong><small>{draft?.name}</small></div>
+          </div>
+          <p>仅从当前剪辑移除，原始素材保留。</p>
+        </div>
+        <footer className="basic-cut-dialog-actions">
+          <Button variant="subtle" data-autofocus onClick={() => setRemoveClipId(null)}>取消</Button>
+          <Button color="red" disabled={blocked} onClick={removeClip}>移除片段</Button>
+        </footer>
+      </>}
     </Modal>
   </section>
 }

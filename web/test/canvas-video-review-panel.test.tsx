@@ -162,6 +162,26 @@ test('provider failures keep the previous report visible and allow retry', async
   } finally { await view.destroy() }
 })
 
+for (const state of ['resumable', 'delivery_pending'] as const) test(`incomplete pages distinguish ${state}`, async t => {
+  let submissions = 0
+  const view = await mount(t, {}, [], async () => Response.json(++submissions === 1
+    ? { ...report, id: 'partial', pagination: { state, completed_pages: 2 }, usable_ranges: [] } : report))
+  try {
+    await act(async () => view.button('开始复核').click())
+    assert.match(view.container.textContent!, /复核未完成.*已完成 2 页/)
+    assert.match(view.container.textContent!, /主角笑意消退/)
+    if (state === 'resumable') {
+      await act(async () => view.button('继续复核').click())
+      assert.equal(submissions, 2)
+      assert.doesNotMatch(view.container.textContent!, /复核未完成/)
+    } else {
+      assert.match(view.container.textContent!, /结果仍未确认/)
+      assert.equal(view.button('重新复核').disabled, true)
+      assert.equal(submissions, 1)
+    }
+  } finally { await view.destroy() }
+})
+
 test('missing capable models disables paid review while keeping historical and stale reports readable', async t => {
   const view = await mount(t, { models: [] }, [{ ...report, stale: true }])
   try {

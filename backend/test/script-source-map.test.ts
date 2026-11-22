@@ -1,7 +1,45 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { resolveSourceSections, scriptSourcePassages, sourceMapSchema,
+import { canonicalizeSourceMapEvidence, resolveSourceSections, scriptSourcePassages, sourceMapSchema,
   sourcePromptUnits, sourceWorkPlan, validateSourceCoverage, workPassages } from '../src/modules/script/script-source-map.js'
+
+test('canonicalizes duplicate supporting evidence without changing primary evidence', () => {
+  const result = sourceMapSchema.parse({
+    sections: [{
+      start_unit: 0, title: '第一集', episode_number: 1, summary: '林舟回家', continues_previous: false, open_threads: [],
+      characters: [{ name: '林舟', description: '回家', evidence: { unit_id: 1, supporting_unit_ids: [1, 2, 2, 3] } }],
+      events: [],
+    }],
+  })
+  const canonical = canonicalizeSourceMapEvidence(result)
+  assert.deepEqual(canonical.sections[0]!.characters[0]!.evidence, { unit_id: 1, supporting_unit_ids: [2, 3] })
+})
+
+test('omits supporting evidence when every support reference duplicates the primary', () => {
+  const result = sourceMapSchema.parse({
+    sections: [{
+      start_unit: 0, title: '第一集', episode_number: 1, summary: '林舟回家', continues_previous: false, open_threads: [],
+      characters: [{ name: '林舟', description: '回家', evidence: { unit_id: 1, supporting_unit_ids: [1, 1] } }],
+      events: [],
+    }],
+  })
+  assert.deepEqual(canonicalizeSourceMapEvidence(result).sections[0]!.characters[0]!.evidence, { unit_id: 1 })
+})
+
+test('resolves a map with duplicate supporting evidence after canonicalization', () => {
+  const passages = scriptSourcePassages('林舟回到故乡。')
+  const result = sourceMapSchema.parse({
+    sections: [{
+      start_unit: passages[0]!.units[0]!.id, title: '第一集', episode_number: 1, summary: '林舟回家',
+      continues_previous: false, open_threads: [],
+      characters: [{ name: '林舟', description: '回家', evidence: { unit_id: passages[0]!.units[0]!.id, supporting_unit_ids: [passages[0]!.units[0]!.id, passages[0]!.units[0]!.id] } }],
+      events: [],
+    }],
+  })
+  const resolved = resolveSourceSections(result, passages)
+  assert.deepEqual(resolved.problems, [])
+  assert.equal(resolved.sections[0]!.characters[0]!.evidence.supporting, undefined)
+})
 
 test('dense headings, long paragraphs, episodes and Unicode retain exact source coordinates across output pages', () => {
   for (const content of [

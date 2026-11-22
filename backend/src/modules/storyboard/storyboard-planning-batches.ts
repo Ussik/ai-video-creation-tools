@@ -144,8 +144,45 @@ export async function generateStoryboardPlanningBatches<Shot extends StoryboardO
     }).strict()).length(count),
   }).strict()
   type Batch = z.infer<ReturnType<typeof batchSchemaFor>>
+
+  /** Auto-fix shot index continuity before throwing error.
+   * Industry best practice: constraint post-processing instead of strict validation.
+   * Based on successful script-source-map optimization. */
+  const autoFixShotIndices = (shots: Batch['shots'], expectedOffset: number): Batch['shots'] | null => {
+    // Check if indices are consecutive but start at wrong offset
+    const allConsecutive = shots.every((shot, i) =>
+      i === 0 || shot.shot_index === shots[i-1]!.shot_index + 1
+    )
+
+    if (allConsecutive && shots[0]?.shot_index !== expectedOffset) {
+      // Auto-adjust: shift all indices to start at expected offset
+      return shots.map((shot, i) => ({ ...shot, shot_index: expectedOffset + i }))
+    }
+
+    // Check if we have all expected indices but in wrong order
+    const expectedIndices = Array.from({length: shots.length}, (_, i) => expectedOffset + i)
+    const hasAllExpected = expectedIndices.every(idx =>
+      shots.some(s => s.shot_index === idx)
+    )
+
+    if (hasAllExpected) {
+      // Auto-fix: reorder to match expected sequence
+      return [...shots].sort((a, b) => a.shot_index - b.shot_index)
+    }
+
+    return null // Cannot auto-fix
+  }
+
   const merge = (value: Batch, scene: typeof outline.scenes[number], offset: number) => {
-    if (value.shots.some((item, index) => item.shot_index !== offset + index)) invalid('镜头扩写必须按本批指定的镜头序号各返回一次，不得重复、遗漏或调换顺序')
+    if (value.shots.some((item, index) => item.shot_index !== offset + index)) {
+      // Try auto-fix before throwing error
+      const fixed = autoFixShotIndices(value.shots, offset)
+      if (fixed) {
+        value.shots = fixed as typeof value.shots
+      } else {
+        invalid('镜头扩写必须按本批指定的镜头序号各返回一次，不得重复、遗漏或调换顺序')
+      }
+    }
     const expanded = value.shots.map(({ shot_index, expansion }) => {
       const original = scene.shots[shot_index]!
       if (Object.keys(expansion).some(key => Object.hasOwn(original, key))) invalid('镜头扩写不能覆盖大纲中的镜头身份、叙事、台词、时长或接镜字段')

@@ -1,3 +1,5 @@
+import { TaskReasoningSelect, useTaskReasoning, type ReasoningModel } from '../models/TaskReasoningSelect'
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { useEffect, useRef, useState, type ClipboardEvent, type SyntheticEvent } from 'react'
 import { Alert, Button, FileButton, Loader, Textarea } from '@mantine/core'
 import { Check, Copy, ImageIcon, ScanSearch, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
@@ -9,6 +11,7 @@ export type CanvasImageAnalysisPanelProps = {
   /** Models with an explicitly configured image-to-text capability. */
   models: { id: string; label: string }[]
   modelId: string
+  reasoningModel?: ReasoningModel
   instructions: string
   prompt: string
   pending?: boolean
@@ -21,14 +24,14 @@ export type CanvasImageAnalysisPanelProps = {
   onModelChange: (modelId: string) => void
   onInstructionsChange: (value: string) => void
   onPromptChange: (value: string) => void
-  onAnalyze: () => void
+  onAnalyze: (options?: TextGenerationOptions) => void
   onCancel?: () => void
   onCreateGeneration: () => void
 }
 
 const stopPropagation = (event: SyntheticEvent) => event.stopPropagation()
 
-export default function CanvasImageAnalysisPanel({ asset, models, modelId, instructions, prompt,
+export default function CanvasImageAnalysisPanel({ asset, models, modelId, reasoningModel, instructions, prompt,
   pending = false, uploading = false, otherPending = false, error, elapsedSeconds = 0,
   onUpload, onClearSource, onModelChange, onInstructionsChange, onPromptChange, onAnalyze, onCancel, onCreateGeneration,
 }: CanvasImageAnalysisPanelProps) {
@@ -39,6 +42,7 @@ export default function CanvasImageAnalysisPanel({ asset, models, modelId, instr
   const busy = processing || otherPending
   const hasPrompt = !!prompt.trim()
   const selectedModel = models.some(model => model.id === modelId)
+  const reasoning = useTaskReasoning(reasoningModel)
   const seconds = Math.max(0, Math.floor(elapsedSeconds))
   useEffect(() => { setCopied(false); setCopyError('') }, [prompt])
   const pasteImage = (event: ClipboardEvent<HTMLElement>) => {
@@ -82,6 +86,7 @@ export default function CanvasImageAnalysisPanel({ asset, models, modelId, instr
     <CanvasSelect label="看图模型" placeholder="选择支持图片理解的模型" data={models.map(model => ({ value: model.id, label: model.label }))}
       value={selectedModel ? modelId : null} onChange={value => { if (value) onModelChange(value) }} disabled={busy || !models.length}
       searchable size="sm" />
+    <TaskReasoningSelect reasoning={reasoning} disabled={busy} />
     {!models.length && <Alert color="yellow" icon={<TriangleAlert size={16} />} title="暂无可用的看图模型">
       请在模型设置中启用文本模型的“支持图片理解”，或为支持 Gemini 文字输出的图片模型启用“Gemini 图片反推”。
     </Alert>}
@@ -91,7 +96,7 @@ export default function CanvasImageAnalysisPanel({ asset, models, modelId, instr
       maxLength={4000} autosize minRows={3} maxRows={6} size="sm" />
     <div className="pc-image-analysis-run">
       <Button type="button" size="sm" leftSection={<ScanSearch size={15} />} loading={pending}
-        disabled={busy || !asset || !selectedModel} onClick={onAnalyze}>{hasPrompt ? '重新反推' : '开始反推'}</Button>
+        disabled={busy || !asset || !selectedModel} onClick={() => onAnalyze(reasoning.request.text_generation_options)}>{hasPrompt ? '重新反推' : '开始反推'}</Button>
       {processing && onCancel && <Button type="button" size="sm" variant="subtle" onClick={onCancel}>{uploading ? '取消上传' : '取消反推'}</Button>}
     </div>
     {pending && <div className="pc-image-analysis-status" role="status" aria-live="polite"><Loader size={14} /><span>

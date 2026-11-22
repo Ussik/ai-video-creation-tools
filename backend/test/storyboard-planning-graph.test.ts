@@ -86,9 +86,11 @@ test('serialized checkpoints restore each accepted stage without repeating paid 
   assert.equal(result.directing_review!.status, 'needs_work'); assert.equal(result.directing_review!.repaired, true)
 })
 
-test('a review failure returns an inconclusive retained candidate without invoking repair or save approval', async () => {
+for (const failure of [new Error('review stream disconnected'), Object.assign(new Error('review delivery pending'), {
+  statusCode: 409, code: 'structured_initial_delivery_pending',
+})]) test(`recoverable review failure retains the candidate: ${failure.message}`, async () => {
   const f = fixture()
-  f.options.review = async () => { f.calls.push('review'); throw new Error('review stream disconnected') }
+  f.options.review = async () => { f.calls.push('review'); throw failure }
   const result = await runStoryboardPlanningWorkflow(f.control, f.options)
   assert.deepEqual(f.calls, ['prepare', 'generate', 'review'])
   assert.deepEqual(f.retained, ['preparation', 'candidate'])

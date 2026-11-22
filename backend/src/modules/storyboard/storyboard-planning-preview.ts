@@ -1,3 +1,4 @@
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { generationScopeVersion, assertGenerationScope } from '../generation/generation-scope-lifecycle.js'
 import { createHash } from 'node:crypto'
 import { now, one, run, type Model, type Provider } from '../../infrastructure/database/db.js'
@@ -6,6 +7,7 @@ type PreviewInput = {
   signature: string; scene_ids: string[]; document_ids: string[]; model_id: string; skill_ids?: string[]
   mode: 'update' | 'redesign'; duration_mode: 'preserve' | 'reestimate'; instructions: string
   target_video_model_id?: string; target_duration?: number; shots_per_scene?: number | null
+  text_generation_options?: TextGenerationOptions
 }
 const namespace = 'storyboard-planning-preview'
 const lifetimeMs = 24 * 60 * 60_000
@@ -22,6 +24,7 @@ export function storyboardPlanningPreviewKey(input: PreviewInput, defaultSkillId
   return createHash('sha256').update(JSON.stringify({ version: 1, ...(projectId&&generationScopeVersion(projectId,namespace)?{scope_version:generationScopeVersion(projectId,namespace)}:{}), signature: input.signature,
     scene_ids: [...input.scene_ids].sort(), document_ids: [...input.document_ids].sort(),
     model_id: input.model_id, model_signature: modelSignature, skill_ids: input.skill_ids ?? defaultSkillIds, mode: input.mode,
+    ...(input.text_generation_options?.reasoning ? { reasoning: input.text_generation_options.reasoning } : {}),
     duration_mode: input.duration_mode, instructions: input.instructions, target_duration: input.target_duration ?? null,
     shots_per_scene: input.shots_per_scene ?? null, target_video_model_id: input.target_video_model_id ?? null,
     target_signature: targetSignature ?? null,

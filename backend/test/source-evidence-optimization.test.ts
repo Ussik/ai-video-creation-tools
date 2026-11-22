@@ -34,29 +34,20 @@ test('evidence pack preserves exact conditions, remote locators and expansion wi
   assert.deepEqual(initial.selected_section_ids, [0, 1]); assert.equal(initial.position_index.length, 62); assert.ok(initial.position_index[61]!.event_locators.length)
   assert.equal(expanded.source_ranges.at(-1)!.content, source.content.slice(state.sections[61]!.offset)); assert.match(expanded.source_ranges[0]!.content, /只能敲一次，不得提前/); assert.deepEqual(state, before)
 })
-test('actual v7 synthesis expands remote evidence once and preserves successful results when another request is unknown', async () => {
-  const { state, source } = fixture(), calls: string[] = []; let expansion = 0
+test('global v7 synthesis sends full source to cross-chapter tasks instead of chained evidence expansion', async () => {
+  const { state, source } = fixture(), calls: string[] = []
   const generate = async (prompt: string) => {
     const input = packet(prompt), key = input.part.key; calls.push(key)
-    if (input.evidence_input) {
-      assert.equal(input.complete_source, false); assert.equal(input.source.content, undefined); assert.deepEqual(input.materials, [])
-      if (key === 'threads:0') {
-        if (!input.evidence_input.selected_section_ids.includes(61)) { expansion++; return JSON.stringify({ needs_section_ids: [61], reason: '核对终章回收原文' }) }
-        return JSON.stringify({ threads: [{ setup: '首章保留信物', payoff: '终章归还', section_ids: [0, 61] }] })
-      }
-      if (input.part.kind === 'uncertainties') throw new Error('offline stop')
+    if (['threads', 'uncertainties'].includes(input.part.kind)) {
+      assert.equal(input.evidence_input, undefined)
+      assert.equal(input.complete_source, true)
+      assert.equal(input.source.content, source.content)
     }
     return sourceAnalysisFixture(prompt)!
   }
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source), /offline stop/)
-  const saved = state.story_work!.tasks.filter(t => t.result !== undefined).map(t => [t.key, structuredClone(t.result)] as const)
-  assert.ok(saved.length >= 9); assert.equal(expansion, 1)
-  const first = state.story_work!.tasks.find(t => t.key === 'threads:0')!
-  assert.deepEqual(first.evidence_expansion!.section_ids, [61]); assert.ok(first.evidence_expansion!.checkpoint.original_raw)
-  const count = calls.length
-  await assert.rejects(synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source))
-  assert.equal(calls.length, count)
-  for (const [key, result] of saved) assert.deepEqual(state.story_work!.tasks.find(t => t.key === key)!.result, result)
+  await synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source)
+  assert.ok(calls.some(key => key.startsWith('threads:')))
+  assert.ok(calls.some(key => key.startsWith('uncertainties:')))
 })
 test('each list dimension uses one fixed field patch, preserves siblings, and never resends the original source', async () => {
   const item = z.object({ description: z.string(), section_ids: z.array(z.number().int().min(0)).min(1) }).strict()
@@ -126,20 +117,20 @@ test('new task ambiguous syntax never purchases a model syntax approval or full 
   assert.equal(calls, 1)
 })
 
-test('complete expansion directive survives a crash and can be retained locally while a sibling remains unknown', async () => {
-  const { state, source } = fixture(); let crash: ScriptSourceAnalysis | undefined
-  await assert.rejects(synthesizeSourceStory(state, async prompt => {
+test('global tasks do not create expansion checkpoints when a sibling is interrupted', async () => {
+  const { state, source } = fixture(), calls: string[] = []
+  const generate = async (prompt: string) => {
     const input = packet(prompt)
-    if (input.part.key === 'threads:0') return JSON.stringify({ needs_section_ids: [61], reason: '需要终章证据' })
-    if (input.part.key === 'threads:1') throw new Error('unknown sibling')
+    calls.push(input.part.key)
+    if (['threads', 'uncertainties'].includes(input.part.kind)) {
+      assert.equal(input.evidence_input, undefined)
+      assert.equal(input.complete_source, true)
+      assert.equal(input.source.content, source.content)
+    }
     return sourceAnalysisFixture(prompt)!
-  }, () => {
-    const task = state.story_work?.tasks.find(t => t.key === 'threads:0')
-    if (!crash && task?.output_candidate?.checkpoint.original_raw?.includes('needs_section_ids') && !task.evidence_expansion) crash = structuredClone(state)
-  }, new AbortController().signal, undefined, undefined, source))
-  assert.ok(crash)
-  let calls = 0
-  await assert.rejects(synthesizeSourceStory(crash!, async () => { calls++; throw new Error('no dispatch allowed') }, () => {}, new AbortController().signal, undefined, undefined, source))
-  assert.equal(calls, 0)
-  assert.deepEqual(crash!.story_work!.tasks.find(t => t.key === 'threads:0')!.evidence_expansion!.section_ids, [61])
+  }
+  await synthesizeSourceStory(state, generate, () => {}, new AbortController().signal, undefined, undefined, source)
+  assert.ok(calls.some(key => key.startsWith('threads:')))
+  assert.ok(calls.some(key => key.startsWith('uncertainties:')))
+  assert.equal(state.story_work, undefined)
 })

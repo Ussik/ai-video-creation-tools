@@ -1,3 +1,4 @@
+import { bindTaskReasoning, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import type { FastifyInstance } from 'fastify'
@@ -29,7 +30,7 @@ export const canvasNodeProposalSourceSchema = z.object({
     .refine(values => new Set(values.map(value => value.asset_id)).size === values.length, '参考图片不能重复'),
   reference_video_asset_id: id.nullable(), shot_id: id.nullable(), storyboard_revision: z.number().int().nonnegative().nullable(), storyboard_reference_asset_id: id.nullable(),
 }).strict()
-const inputSchema = z.object({ text_model_id: id, instructions: z.string().trim().min(1).max(4000), source: canvasNodeProposalSourceSchema }).strict()
+const inputSchema = z.object({ text_model_id: id, text_generation_options: textGenerationOptionsInput, instructions: z.string().trim().min(1).max(4000), source: canvasNodeProposalSourceSchema }).strict()
 const paramsSchema = z.object({ id, canvasId: id })
 const validationSchema = z.object({ source: canvasNodeProposalSourceSchema, validation_fingerprint: fingerprint }).strict()
 type GraphNode = { id: string; type: string; model_id?: string | null; shot_id?: string | null; job_id?: string | null; asset_id?: string | null; prompt?: string; settings?: object }
@@ -157,6 +158,7 @@ export function registerCanvasNodeProposalRoutes(app: FastifyInstance, dependenc
     const initial = await sourceState(projectId, canvasId, source, dependencies)
     const textModel = required<Model>('models', input.text_model_id), textProvider = required<Provider>('providers', textModel.provider_id)
     if (textModel.modality !== 'text' || !textModel.enabled || textModel.archived || textProvider.adapter === 'demo' || !textProvider.enabled || textProvider.archived) fail('请选择提供商可用且已启用的文本模型')
+    const withReasoning = bindTaskReasoning(textModel, textProvider, input.text_generation_options)
     const controller = new AbortController(), abort = () => { if (!reply.raw.writableEnded) controller.abort(new DOMException('节点方案已取消', 'AbortError')) }
     request.raw.once('aborted', abort); reply.raw.once('close', abort)
     try {
@@ -168,7 +170,7 @@ export function registerCanvasNodeProposalRoutes(app: FastifyInstance, dependenc
           prompt: source.prompt, parameters: source.parameters, allowed_parameter_changes: initial.capabilities,
           references: source.reference_assets.map((value, index) => ({ order: index + 1, usage: value.usage })), has_reference_video: !!source.reference_video_asset_id })
       const generated = await withModelOperationStage('canvas_adjustment', () => generateStructuredOutput('canvas_node_proposal', proposalSchema(initial.capabilities),
-        (prompt, contract) => dependencies.generateText(projectId, input.text_model_id, prompt, contract, modelStepSignal(controller.signal)), task,
+        (prompt, contract) => withReasoning(() => dependencies.generateText(projectId, input.text_model_id, prompt, contract, modelStepSignal(controller.signal))), task,
         { signal: controller.signal, budgetMs: 120_000, validate: value => {
           validateManagedPromptDocument(value.prompt)
           const referenceIds = source.reference_assets.map(reference => reference.asset_id)

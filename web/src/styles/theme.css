@@ -1,25 +1,35 @@
 /* Shared workbench tokens also reach controls rendered through body portals. */
 :root {
   color-scheme: dark;
-  --fc-canvas: #141414;
-  --fc-surface: #1b1c1e;
-  --fc-panel: #202123;
-  --fc-surface-muted: #27282b;
-  --fc-surface-hover: #303236;
-  --fc-text: #e8eaed;
-  --fc-text-secondary: #c4c7ce;
-  --fc-text-muted: #a0a4ad;
-  --fc-text-subtle: #858b96;
-  --fc-border: #3a3d43;
-  --fc-border-soft: #2d3035;
-  --fc-border-strong: #626975;
+  --fc-canvas: #101214;
+  --fc-surface: #15171a;
+  --fc-panel: #1c1f23;
+  --fc-surface-muted: #24282e;
+  --fc-surface-hover: #2d323a;
+  --fc-text: #eef0f3;
+  --fc-text-secondary: #bdc3ce;
+  --fc-text-muted: #939dab;
+  --fc-text-subtle: #8792a2;
+  --fc-border: #ffffff1a;
+  --fc-border-soft: #ffffff0c;
+  --fc-border-strong: #ffffff36;
   --fc-primary: #409eff;
   --fc-on-primary: #ffffff;
   --fc-primary-hover: #79bbff;
   --fc-primary-soft: #409eff19;
-  --fc-action: #e8eaed;
-  --fc-on-action: #202328;
-  --fc-action-hover: #ffffff;
+  --fc-action: #2b70c2;
+  --fc-on-action: #ffffff;
+  --fc-action-hover: #367ccc;
+  --fc-action-gradient: linear-gradient(180deg, #3278ca, #2b70c2);
+  --fc-action-gradient-hover: linear-gradient(180deg, #3b83d5, #3278c7);
+  --fc-action-border: #a8d2ff36;
+  --fc-action-border-hover: #bcdcff65;
+  --fc-action-shadow: inset 0 1px #d6ebff2e, 0 1px 2px #071b391a, 0 3px 10px #183b651f;
+  --fc-control-highlight: #ffffff07;
+  --fc-control-shadow: inset 0 1px var(--fc-control-highlight), 0 1px 2px #0000000a;
+  --fc-control-recess: inset 0 1px 2px #0000000b;
+  --fc-ease: cubic-bezier(.22, .8, .3, 1);
+  --fc-font-sans: "Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --fc-media-overlay: #101214b8;
   --fc-media-text: #ffffff;
   --fc-success: #85c99e;
@@ -30,10 +40,11 @@
   --fc-switch-on: var(--fc-primary);
   --fc-switch-thumb-on: #ffffff;
   --fc-switch-thumb-off: #c4c7ce;
-  --fc-floating: #202123d9;
-  --fc-shadow: 0 4px 18px #00000026, 0 1px 4px #0000001a;
-  --fc-node-shadow: 0 2px 8px #0000001f;
-  --fc-modal-shadow: 0 18px 64px #00000047;
+  --fc-floating: #1c1f23eb;
+  --fc-shadow: inset 0 1px #ffffff06, 0 4px 18px #03060a26, 0 1px 4px #03060a1a;
+  --fc-node-shadow: inset 0 1px #ffffff05, 0 3px 12px #03060a24;
+  --fc-modal-shadow: inset 0 1px #ffffff0a, 0 2px 6px #03060a20, 0 20px 70px #03060a50;
+  --fc-popover-shadow: inset 0 1px #ffffff08, 0 2px 6px #03060a1a, 0 12px 35px #03060a38;
   --fc-radius-sm: 4px;
   --fc-radius-md: 8px;
   --fc-radius-lg: 12px;
@@ -41,7 +52,7 @@
   --fc-success-soft: #85c99e14;
   --fc-danger-soft: #ee989814;
   --fc-warning-soft: #dbb77d14;
-  --fc-grid: #42454c;
+  --fc-grid: #343b45;
   --workspace-black: var(--fc-canvas);
   --workspace-ink: var(--fc-surface);
   --workspace-panel: var(--fc-panel);
@@ -63,7 +74,7 @@
   --canvas-chrome-focus: var(--fc-focus);
   --canvas-chrome-shadow: var(--fc-shadow);
   --select-surface: var(--fc-panel);
-  --select-control: var(--fc-surface);
+  --select-control: var(--fc-canvas);
   --select-border: var(--fc-border);
   --select-text: var(--fc-text);
   --select-muted: var(--fc-text-subtle);
@@ -82,25 +93,33 @@
 }
 :root[data-mantine-color-scheme='light'] {
   color-scheme: light;
-  --fc-canvas: #f7f8fa;
-  --fc-surface: #ffffff;
+  --fc-canvas: #f0f2f5;
+  --fc-surface: #f8f9fb;
   --fc-panel: #ffffff;
-  --fc-surface-muted: #f0f2f5;
-  --fc-surface-hover: #e9ecf1;
-  --fc-text: #252932;
-  --fc-text-secondary: #454c58;
-  --fc-text-muted: #626b79;
-  --fc-text-subtle: #737c8a;
-  --fc-border: #d9dee7;
-  --fc-border-soft: #e8ebf0;
-  --fc-border-strong: #aeb8c6;
+  --fc-surface-muted: #eef1f5;
+  --fc-surface-hover: #e5eaf1;
+  --fc-text: #252b34;
+  --fc-text-secondary: #525e6d;
+  --fc-text-muted: #657182;
+  --fc-text-subtle: #707c8d;
+  --fc-border: #1e304323;
+  --fc-border-soft: #1e304310;
+  --fc-border-strong: #1e304343;
   --fc-primary: #337ecc;
   --fc-on-primary: #ffffff;
   --fc-primary-hover: #216bb6;
   --fc-primary-soft: #409eff12;
-  --fc-action: #252932;
+  --fc-action: #2869b8;
   --fc-on-action: #ffffff;
-  --fc-action-hover: #454c58;
+  --fc-action-hover: #3277c5;
+  --fc-action-gradient: linear-gradient(180deg, #3074c2, #2869b8);
+  --fc-action-gradient-hover: linear-gradient(180deg, #377dc9, #2f72bd);
+  --fc-action-border: #1c5da23b;
+  --fc-action-border-hover: #1c5da270;
+  --fc-action-shadow: inset 0 1px #ffffff30, 0 1px 2px #183b6512, 0 3px 10px #183b6514;
+  --fc-control-highlight: #ffffffd9;
+  --fc-control-shadow: inset 0 1px var(--fc-control-highlight), 0 1px 2px #1e304306;
+  --fc-control-recess: inset 0 1px 2px #1e304306;
   --fc-success: #25734e;
   --fc-success-soft: #e7f3ec;
   --fc-danger: #b43c35;
@@ -112,10 +131,11 @@
   --fc-switch-on: var(--fc-primary);
   --fc-switch-thumb-on: #ffffff;
   --fc-switch-thumb-off: #ffffff;
-  --fc-floating: #ffffffe6;
-  --fc-shadow: 0 4px 18px #25334d0a, 0 1px 4px #25334d0a;
-  --fc-node-shadow: 0 2px 8px #25334d08;
-  --fc-modal-shadow: 0 18px 64px #25334d1f;
+  --fc-floating: #ffffffed;
+  --fc-shadow: inset 0 1px #ffffff, 0 4px 18px #2236490b, 0 1px 4px #2236490a;
+  --fc-node-shadow: inset 0 1px #ffffff, 0 3px 12px #2236490a;
+  --fc-modal-shadow: 0 2px 8px #2236490a, 0 24px 70px #1c2e4526;
+  --fc-popover-shadow: inset 0 1px #ffffff, 0 2px 6px #22364908, 0 12px 35px #2236491a;
   --fc-grid: #c9d0dc;
 }
 .theme-toggle { flex: none; width: 32px; height: 32px; }
@@ -210,29 +230,33 @@ html[data-theme-transition='contract']::view-transition-old(root) {
 .studio-media-player.is-video > .studio-media-controls { --fc-text: #f0f0ef; --fc-text-secondary: #c7c9cc; --fc-text-muted: #a0a4aa; --fc-surface: #17181a; --fc-surface-muted: #25272a; --fc-surface-hover: #303338; --fc-border: #36393e; --fc-border-soft: #292c30; --fc-text-subtle: #858a92; }
 .timeline-preview-message { color: #f0f0ef; }
 html, body, #root { min-height: 100%; }
-body { background: var(--fc-canvas); color: var(--fc-text); font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; font-size: 14px; -webkit-font-smoothing: antialiased; }
+body { background: var(--fc-canvas); color: var(--fc-text); font-family: var(--fc-font-sans); font-size: 14px; font-variant-numeric: tabular-nums; letter-spacing: .05px; -webkit-font-smoothing: antialiased; }
 :where(button, a, input, textarea, [role='tab'], [role='option'], [role='slider']):focus-visible { outline: 2px solid var(--fc-focus); outline-offset: 3px; }
-.mantine-Input-input { transition: border-color 140ms ease, background-color 140ms ease; }
+.mantine-Input-input { transition: border-color 220ms var(--fc-ease), background-color 220ms var(--fc-ease), box-shadow 220ms var(--fc-ease); }
 .mantine-Input-input:focus:not([data-error]), .mantine-Input-input[data-expanded] { border-color: var(--fc-focus); box-shadow: 0 0 0 2px var(--fc-focus-ring); }
 .mantine-Input-input::placeholder { color: var(--fc-text-subtle); opacity: 1; }
 
-.mantine-Button-root[data-variant='filled'] { background: var(--button-bg); color: var(--button-color); }
-.mantine-Button-root[data-variant='filled']:hover:not(:disabled):not([data-loading]) { background: var(--button-hover); }
-.mantine-Button-root[data-variant='default'] { background: var(--fc-surface); border-color: var(--fc-border); color: var(--fc-text-secondary); }
-.mantine-Button-root[data-variant='default']:hover:not(:disabled) { background: var(--fc-surface-hover); border-color: var(--fc-border-strong); }
+.mantine-Button-root[data-variant='filled']:not(:disabled):not([data-disabled]) { background: var(--button-bg); color: var(--button-color); }
+.mantine-Button-root[data-variant='filled']:hover:not(:disabled):not([data-disabled]):not([data-loading]) { background: var(--button-hover); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mantine-Input-input { transition: none; }
+}
+.mantine-Button-root[data-variant='default'] { background: linear-gradient(180deg, var(--fc-control-highlight), transparent), var(--fc-surface-muted); border-color: var(--fc-border); color: var(--fc-text); box-shadow: var(--fc-control-shadow); }
+.mantine-Button-root[data-variant='default']:hover:not(:disabled):not([data-disabled]) { background-color: var(--fc-surface-hover); border-color: var(--fc-border-strong); }
 .mantine-Button-root[data-variant='subtle']:not([data-workspace-control]), .mantine-ActionIcon-root[data-variant='subtle']:not([data-workspace-control]) { color: var(--fc-text-secondary); }
 .mantine-Button-root[data-variant='subtle']:not([data-workspace-control]):hover:not(:disabled), .mantine-ActionIcon-root[data-variant='subtle']:not([data-workspace-control]):hover:not(:disabled) { background: var(--fc-surface-hover); color: var(--fc-text); }
 .mantine-Button-root:disabled, .mantine-Button-root[data-disabled], .mantine-ActionIcon-root:disabled { background: var(--fc-surface-muted); color: var(--fc-text-subtle); border-color: var(--fc-border-soft); opacity: .6; cursor: not-allowed; }
 .mantine-Modal-content { background: var(--fc-panel); color: var(--fc-text); }
 .mantine-Modal-header { background: var(--fc-panel); }
 .mantine-Modal-body { padding-top: 18px; }
-.mantine-Popover-dropdown, .mantine-Menu-dropdown { background: var(--fc-panel); border-color: var(--fc-border-soft); border-radius: var(--fc-radius-lg); color: var(--fc-text); box-shadow: var(--fc-shadow); }
+.mantine-Popover-dropdown, .mantine-Menu-dropdown { background: linear-gradient(150deg, var(--fc-control-highlight), transparent 45%), var(--fc-panel); border-color: var(--fc-border); border-radius: 10px; color: var(--fc-text); box-shadow: var(--fc-popover-shadow); }
 .mantine-Menu-item { color: var(--menu-item-color, var(--fc-text-secondary)); border-radius: 6px; min-height: 32px; }
 .mantine-Menu-item:hover, .mantine-Menu-item[data-hovered] { background: var(--fc-surface-hover); color: var(--menu-item-color, var(--fc-text)); }
 .mantine-Menu-itemLabel { display: flex; align-items: center; gap: 9px; }
 .mantine-SegmentedControl-label { white-space: nowrap; }
 .mantine-SegmentedControl-label[data-active] { color: var(--fc-primary); }
-/* Accent indicates state while filled creation actions keep neutral contrast. */
+/* Accent identifies selected states and the primary creation action. */
 .mantine-Switch-thumb { --switch-thumb-bg: var(--fc-switch-thumb-off); }
 .mantine-Switch-input:checked:not(:disabled):not([data-disabled]) + .mantine-Switch-track .mantine-Switch-thumb { --switch-thumb-bg: var(--fc-switch-thumb-on); }
 .mantine-Switch-input:focus-visible + .mantine-Switch-track { outline-color: var(--fc-switch-on); }

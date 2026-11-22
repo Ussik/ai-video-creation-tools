@@ -9,6 +9,7 @@ import { ArrowLeft, ChevronDown, LoaderCircle, Puzzle, ShieldCheck, WandSparkles
 import { api, json } from '../../shared/api/api'
 import { preferredModel } from '../models/model-defaults'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import type { Model } from '../../shared/api/api'
 import { useCreativeSkills } from './useCreativeSkills'
 import CreativeSkillSelector from './CreativeSkillSelector'
@@ -60,6 +61,7 @@ export default function PromptSkillAction(props: Props) {
   const visionFallback = props.modality === 'video' && props.referenceAssetIds.length
     ? preferredModel(props.models.filter(model => model.settings?.supports_vision === true && ['responses', 'chat_completions'].includes(model.protocol)))?.id : undefined
   const { modelId, selectModel } = useSharedModelSelection('text', props.models, { locked: pending, active: opened, fallbackId: visionFallback })
+  const reasoning = useTaskReasoning(props.models.find(model => model.id === modelId))
   const [hasResult, setHasResult] = useState(false)
   const [resultBefore, setResultBefore] = useState('')
   const [adjusting, setAdjusting] = useState(false)
@@ -167,7 +169,7 @@ export default function PromptSkillAction(props: Props) {
     setElapsed(0)
     setPending(true); setError(''); abort.current = new AbortController()
     try {
-      const request = { ...(restart ? { restart: true } : {}), stage, skill_ids: skillControl.requestIds(stage), model_id: modelId, prompt, prompt_body: body,
+      const request = { ...(restart ? { restart: true } : {}), stage, skill_ids: skillControl.requestIds(stage), model_id: modelId, ...reasoning.request, prompt, prompt_body: body,
           ...(promptDocument ? { prompt_document: true } : {}),
           prompt_template: props.promptTemplate, adjustment_request: capturedAdjustment, target_model_id: props.targetModelId || null, shot_id: props.shotId,
           profile_id: props.profileId, ratio: props.ratio, duration: props.duration, mode: props.mode, reference_asset_ids: props.referenceAssetIds,
@@ -257,6 +259,7 @@ export default function PromptSkillAction(props: Props) {
             value={modelId || null} onChange={value => selectModel(value || '')} placeholder="选择用于整理的文本模型"
             disabled={pending} allowDeselect={false} searchable rightSection={<ChevronDown size={14} />} rightSectionPointerEvents="none"
             classNames={{ input: 'prompt-skill-model-input', dropdown: 'prompt-skill-dropdown' }} comboboxProps={{ zIndex: 420 }} />
+          <TaskReasoningSelect reasoning={reasoning} disabled={pending} zIndex={420} />
           {props.modality === 'video' && !!props.referenceAssetIds.length && <Switch label="参考图视觉诊断"
             description={canSeeReferences ? '查看实际参考图，诊断拼版、姿势与动作空间；一次最多查看前八张，其余会标为未查看。' : '当前模型仅依据文字整理。选择支持图片理解的模型后可开启。'}
             checked={inspectReferences} disabled={pending || !canSeeReferences} onChange={event => setReferenceVision(event.currentTarget.checked)} />}

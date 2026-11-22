@@ -4,6 +4,7 @@ import { Archive, ArchiveRestore, Check, Expand, Film, Images } from 'lucide-rea
 import type { Asset, Model } from '../../shared/api/api'
 import CanvasNodeMedia from './CanvasNodeMedia'
 import './shot-candidates.css'
+import './candidate-dialog-layout.css'
 
 type CandidateProps = {
   modality?: 'image' | 'video'
@@ -123,35 +124,38 @@ export default function ShotCandidateManager({ modality = 'image', candidates, a
     classNames={{ content: 'pc-confirm-modal pc-shot-candidate-modal', header: 'pc-confirm-modal-header', body: 'pc-confirm-modal-body', close: 'pc-confirm-modal-close' }}
     onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key !== 'Tab' && event.key !== 'Escape') event.stopPropagation() }}>
     <div className="pc-shot-candidate-manager">
-      <div className="pc-shot-candidate-filters" role="group" aria-label={labels.range}>
-        <UnstyledButton type="button" disabled={locked} aria-pressed={filter === 'active'} onClick={() => chooseFilter('active')}>{labels.filter} · {all.filter(asset => !archived.has(asset.id)).length}</UnstyledButton>
-        <UnstyledButton type="button" disabled={locked} aria-pressed={filter === 'archived'} onClick={() => chooseFilter('archived')}>已归档 · {all.filter(asset => archived.has(asset.id)).length}</UnstyledButton>
-      </div>
-      {action.error && <p className="pc-shot-candidate-error" role="alert">{action.error}</p>}
-      {generating && <p className="pc-shot-candidate-help" role="status">正在生成{labels.noun}，完成后可切换或归档候选。</p>}
-      {selected ? <div className="pc-shot-candidate-workspace">
-        <div className="pc-shot-candidate-grid" aria-label={`${labels.item}列表`}>{visible.map((asset, index) => <UnstyledButton type="button" key={asset.id} disabled={locked} aria-label={`查看${labels.item} ${index + 1}`} aria-pressed={selected.id === asset.id}
-          onClick={() => { if (!busy && !action.locked.current) { setSelectedId(asset.id); action.setError('') } }}>
-          {modality === 'video' ? <CanvasNodeMedia asset={asset} previewSize={320} /> : <img src={asset.url} alt={asset.filename} loading="lazy" />}<span><CandidateState current={asset.id === displayedAssetId} selected={asset.id === selectedAssetId} index={index} /></span>
-        </UnstyledButton>)}</div>
-        <div className="pc-shot-candidate-detail">
-          {modality === 'video' ? <>
-            <div className="pc-shot-candidate-preview pc-shot-candidate-video-preview"><CanvasNodeMedia key={`${selected.id}:${previewOpen}`} asset={selected} controls={!previewOpen} /></div>
-            <Button className="pc-shot-candidate-expand" variant="subtle" size="compact-xs" disabled={locked} leftSection={<Expand size={14} />} aria-label="全屏查看视频候选" onClick={() => { if (!busy && !action.locked.current) onPreview(selected) }}>全屏查看</Button>
-          </> : <UnstyledButton type="button" className="pc-shot-candidate-preview" disabled={locked} aria-label="放大查看分镜候选图" onClick={() => { if (!busy && !action.locked.current) onPreview(selected) }}>
-            <img src={selected.url} alt={selected.filename} /><span><Expand size={14} />放大查看</span>
-          </UnstyledButton>}
-          <div className="pc-shot-candidate-meta"><strong>{title}</strong><span>{selected.source === 'upload' ? '本地上传' : models.find(model => model.id === selected.model_id)?.name || `生成${labels.noun}`}</span><time dateTime={selected.created_at}>{new Date(selected.created_at).toLocaleString('zh-CN')}</time></div>
-          <div className="pc-shot-candidate-actions">
-            <Button variant="default" size="xs" leftSection={<Check size={14} />} loading={action.pending === 'use'} disabled={locked || generating || current || selectedArchived}
-              onClick={() => { if (!busy && !generating && !selectedArchived && !current) void action.run('use', () => onUse(selected.id)) }}>{current ? '当前使用中' : `设为当前${labels.noun}`}</Button>
-            <Button variant="default" size="xs" leftSection={selectedArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />} loading={action.pending === 'archive'} disabled={locked || generating || !selectedArchived && protectedSelection}
-              onClick={() => { if (!busy && !generating && (selectedArchived || !protectedSelection)) void action.run('archive', () => onArchive(selected.id, !selectedArchived)) }}>{selectedArchived ? '恢复候选' : '归档候选'}</Button>
-          </div>
-          <p className="pc-shot-candidate-help">{selectedArchived ? `恢复候选后，可以将其设为当前${labels.noun}。` : protectedSelection ? `当前使用或已入片的${labels.noun}会保留在候选列表。` : `选中${labels.filter}后，点击“设为当前${labels.noun}”应用到此节点。`}</p>
+      <div className="pc-shot-candidate-scroll">
+        <div className="pc-shot-candidate-filters" role="group" aria-label={labels.range}>
+          <UnstyledButton type="button" disabled={locked} aria-pressed={filter === 'active'} onClick={() => chooseFilter('active')}>{labels.filter} · {all.filter(asset => !archived.has(asset.id)).length}</UnstyledButton>
+          <UnstyledButton type="button" disabled={locked} aria-pressed={filter === 'archived'} onClick={() => chooseFilter('archived')}>已归档 · {all.filter(asset => archived.has(asset.id)).length}</UnstyledButton>
         </div>
-      </div> : <div className="pc-shot-candidate-empty">{filter === 'archived' ? `暂无归档的${labels.item}` : `暂无${labels.filter}，生成${labels.artifact}后会出现在这里`}</div>}
-      <p className="pc-shot-candidate-help">归档会收起{labels.filter}，可在“已归档”中恢复；原始{labels.noun}会保留。</p>
+        {action.error && <p className="pc-shot-candidate-error" role="alert">{action.error}</p>}
+        {generating && <p className="pc-shot-candidate-help" role="status">正在生成{labels.noun}，完成后可切换或归档候选。</p>}
+        {selected ? <div className="pc-shot-candidate-workspace">
+          <div className="pc-shot-candidate-grid" aria-label={`${labels.item}列表`}>{visible.map((asset, index) => <UnstyledButton type="button" key={asset.id} disabled={locked} aria-label={`查看${labels.item} ${index + 1}`} aria-pressed={selected.id === asset.id}
+            onClick={() => { if (!busy && !action.locked.current) { setSelectedId(asset.id); action.setError('') } }}>
+            {modality === 'video' ? <CanvasNodeMedia asset={asset} previewSize={320} /> : <img src={asset.url} alt={asset.filename} loading="lazy" />}<span><CandidateState current={asset.id === displayedAssetId} selected={asset.id === selectedAssetId} index={index} /></span>
+          </UnstyledButton>)}</div>
+          <div className="pc-shot-candidate-detail">
+            {modality === 'video' ? <>
+              <div className="pc-shot-candidate-preview pc-shot-candidate-video-preview"><CanvasNodeMedia key={`${selected.id}:${previewOpen}`} asset={selected} controls={!previewOpen} /></div>
+              <Button className="pc-shot-candidate-expand" variant="subtle" size="compact-xs" disabled={locked} leftSection={<Expand size={14} />} aria-label="全屏查看视频候选" onClick={() => { if (!busy && !action.locked.current) onPreview(selected) }}>全屏查看</Button>
+            </> : <UnstyledButton type="button" className="pc-shot-candidate-preview" disabled={locked} aria-label="放大查看分镜候选图" onClick={() => { if (!busy && !action.locked.current) onPreview(selected) }}>
+              <img src={selected.url} alt={selected.filename} /><span><Expand size={14} />放大查看</span>
+            </UnstyledButton>}
+            <div className="pc-shot-candidate-meta"><strong>{title}</strong><span>{selected.source === 'upload' ? '本地上传' : models.find(model => model.id === selected.model_id)?.name || `生成${labels.noun}`}</span><time dateTime={selected.created_at}>{new Date(selected.created_at).toLocaleString('zh-CN')}</time></div>
+
+            <p className="pc-shot-candidate-help">{selectedArchived ? `恢复候选后，可以将其设为当前${labels.noun}。` : protectedSelection ? `当前使用或已入片的${labels.noun}会保留在候选列表。` : `选中${labels.filter}后，点击“设为当前${labels.noun}”应用到此节点。`}</p>
+          </div>
+        </div> : <div className="pc-shot-candidate-empty">{filter === 'archived' ? `暂无归档的${labels.item}` : `暂无${labels.filter}，生成${labels.artifact}后会出现在这里`}</div>}
+        <p className="pc-shot-candidate-help">归档会收起{labels.filter}，可在“已归档”中恢复；原始{labels.noun}会保留。</p>
+      </div>
+      {selected && <footer className="pc-shot-candidate-actions">
+        <Button variant="default" size="xs" leftSection={<Check size={14} />} loading={action.pending === 'use'} disabled={locked || generating || current || selectedArchived}
+          onClick={() => { if (!busy && !generating && !selectedArchived && !current) void action.run('use', () => onUse(selected.id)) }}>{current ? '当前使用中' : `设为当前${labels.noun}`}</Button>
+        <Button variant="default" size="xs" leftSection={selectedArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />} loading={action.pending === 'archive'} disabled={locked || generating || !selectedArchived && protectedSelection}
+          onClick={() => { if (!busy && !generating && (selectedArchived || !protectedSelection)) void action.run('archive', () => onArchive(selected.id, !selectedArchived)) }}>{selectedArchived ? '恢复候选' : '归档候选'}</Button>
+      </footer>}
     </div>
   </Modal>
 }

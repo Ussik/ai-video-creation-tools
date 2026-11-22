@@ -14,6 +14,13 @@ test('a saved desktop window fits a small viewport without inaccessible controls
   assert.deepEqual(small, { x: 12, y: 12, width: 296, height: 336 })
 })
 
+test('expanded and minimized windows stay below the workspace tabs', () => {
+  const viewport = { width: 1200, height: 720, top: 64 }
+  const rect = { x: 600, y: 0, width: 520, height: 680 }
+  assert.deepEqual(clampDirectorWindow(rect, viewport), { ...rect, y: 76, height: 632 })
+  assert.equal(clampDirectorWindow({ ...rect, y: 700 }, viewport, 68).y, 640)
+})
+
 test('Enter submits while Shift+Enter and Chinese IME confirmation do not', () => {
   assert.equal(shouldSendDirectorMessage({ key: 'Enter', shiftKey: false }), true)
   assert.equal(shouldSendDirectorMessage({ key: 'Enter', shiftKey: true }), false)

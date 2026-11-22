@@ -31,7 +31,7 @@ function project(id: string, name: string): ProjectDetail {
 const fixtures = [project('a', '春日序章'), project('b', '夏日旅途'), project('c', '冬日归来')]
 async function settle() { await act(async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }) }
 function button(label: string, scope: ParentNode = document): HTMLButtonElement {
-  const result = [...scope.querySelectorAll('button')].find(item => item.textContent?.trim() === label)
+  const result = [...scope.querySelectorAll('button')].find(item => item.textContent?.trim() === label || item.getAttribute('aria-label') === label)
   assert.ok(result, `button ${label} exists`)
   return result
 }
@@ -53,8 +53,16 @@ async function search(value: string) {
 async function mount(t: TestContext) {
   let projects = structuredClone(fixtures), failDelete = false
   const mutations: Array<{ path: string; ids?: string[] }> = [], continuityReads: string[] = []
+  const creations: Array<{ name: string; brief: string; ratio: ProjectDetail['ratio'] }> = []
   t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
     const path = String(url), method = init?.method || 'GET'
+    if (path === '/api/projects' && method === 'POST') {
+      const input = JSON.parse(String(init?.body)) as typeof creations[number]
+      creations.push(input)
+      const created = { ...project('created', input.name), ...input }
+      projects = [...projects, created]
+      return Response.json(created)
+    }
     if (method !== 'GET') {
       assert.equal(path, '/api/projects/batch-delete')
       assert.equal(method, 'POST')
@@ -66,6 +74,10 @@ async function mount(t: TestContext) {
     }
     if (path === '/api/projects') return Response.json(projects)
     if (path === '/api/providers' || path === '/api/models') return Response.json([])
+    if (path.endsWith('/script/source')) return Response.json(null)
+    if (path.endsWith('/script/conversations')) return Response.json({ conversations: [] })
+    if (path.endsWith('/skills/defaults')) return Response.json({ policies: [] })
+    if (path.endsWith('/tools-state')) return Response.json({ draft: null, decisions: [] })
     const id = /^\/api\/projects\/([^/]+)(?:\/|$)/.exec(path)?.[1]
     if (path.endsWith('/continuity')) {
       continuityReads.push(id!)
@@ -87,9 +99,30 @@ async function mount(t: TestContext) {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   await act(async () => root.render(<MantineProvider env="test"><App /></MantineProvider>)); await settle()
-  return { container, mutations, continuityReads, failDeletion: () => { failDelete = true },
+  return { container, mutations, creations, continuityReads, failDeletion: () => { failDelete = true },
     allowDeletion: () => { failDelete = false }, cleanup: async () => { await act(async () => root.unmount()); container.remove() } }
 }
+
+test('project creation only writes on confirmation and opens the chosen creative setup', async t => {
+  const view = await mount(t)
+  try {
+    await click(button('新建项目'))
+    await click(button('取消', document.querySelector('[role="dialog"]')!))
+    assert.deepEqual(view.creations, [])
+    await click(button('新建项目'))
+    const dialog = document.querySelector('[role="dialog"]')!
+    await click(button('9:16 竖屏', dialog))
+    const name = dialog.querySelector<HTMLInputElement>('input[placeholder="给故事起个名字"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(name, '海边来信')
+      name.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    await click(button('开始创作', dialog))
+    assert.deepEqual(view.creations, [{ name: '海边来信', ratio: '9:16', brief: '' }])
+    assert.ok(view.container.querySelector('.creative-brief-workspace'))
+    assert.match(view.container.querySelector('.creative-brief-art h1')!.textContent!, /海边来信/)
+  } finally { await view.cleanup() }
+})
 
 test('project batch selection supports current-result select all, hidden selections and cancelling without deletion', async t => {
   const view = await mount(t)
@@ -173,7 +206,9 @@ test('deleting all projects leaves a working empty gallery with creation availab
     await click(button('批量管理')); await click(checkbox('全选当前结果'))
     await click(button('删除所选项目')); await click(button('确认删除 3 个项目'))
     assert.equal(document.querySelectorAll('.project-card-main').length, 0)
-    assert.ok(document.querySelector('.project-create'))
+    const emptyGallery = document.querySelector('.project-page-empty')
+    assert.ok(emptyGallery)
+    assert.equal(button('新建项目', emptyGallery).disabled, false)
     assert.equal(button('批量管理').disabled, true)
     assert.equal(document.querySelector('.project-batch-toolbar'), null)
   } finally { await view.cleanup() }
@@ -185,7 +220,7 @@ test('cancelling batch mode preserves ordinary card navigation', async t => {
     await click(button('批量管理')); await click(button('取消批量管理'))
     await click(document.querySelector<HTMLButtonElement>('.project-card-main')!)
     assert.equal(document.querySelector('.project-page'), null)
-    assert.ok(document.querySelector('.project-canvas'))
+    assert.ok(document.querySelector('[aria-label="剧本创作"]'))
     assert.equal(view.mutations.length, 0)
   } finally { await view.cleanup() }
 })

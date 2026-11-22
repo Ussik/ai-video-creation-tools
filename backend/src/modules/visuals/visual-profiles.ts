@@ -1,3 +1,6 @@
+import { bindTaskReasoningById, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
+import { generationUnitStore } from '../generation/generation-unit-store.js'
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { visualProfileContent } from './visual-profile-content-cache.js'
 import { prepareVisualCoverage, isCoverageUnit } from './visual-coverage-workflow.js'
 import { visualProfilePreparationState } from './visual-profile-preparation-state.js'
@@ -41,7 +44,7 @@ import { enrichExplicitReferenceBindings } from '@video-studio/shared/visuals/ex
 import { explicitReferenceProfiles } from './explicit-reference-context.js'
 import { persistResolvedVisualBindings, resolveShotVisualBindings, resolveVisualBinding, synchronizeProjectVisualBindings, synchronizeVisualProfileBindings,
   type VisualBindingReferenceSelection, type VisualBindingSyncMode } from './visual-binding-sync.js'
-import { referenceCoverageTargets, scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualReferenceCoverageInstructions, visualReferenceCoverageSchema } from './visual-reference-coverage.js'
+import { canonicalizeCoverageObjects, referenceCoverageTargets, scopeVisualReferenceCoverage, validateVisualReferenceCoverage, visualReferenceCoverageInstructions, visualReferenceCoverageSchema } from './visual-reference-coverage.js'
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
 import { runCreativeWorkflowBudget } from '../generation/creative-workflow-budget.js'
@@ -772,7 +775,7 @@ export function autoConfirmGeneratedProfileBoard(job: Job): void {
   updateVisualProfile(profile.id, { board_asset_id: first.asset.id, expected_revision: profile.revision, expected_style_version: first.style.version }, { styleReview: 'automatic' })
 }
 
-export async function analyzeVisualProfiles(id: string, data: { reuse_validated_profiles?: boolean; retain_checkpoint?: boolean; restart?: boolean; require_visual_coverage?: boolean; model_id: string; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null; unit_keys?: string[]; skip_unit_keys?: string[]; retry_unit?: { unit_key: string; token: string }; retry_units?: Array<{ unit_key: string; token: string }>; run_id?: string; trusted_terminal_transport?: boolean }, context: {
+export async function analyzeVisualProfiles(id: string, data: { reuse_validated_profiles?: boolean; retain_checkpoint?: boolean; restart?: boolean; require_visual_coverage?: boolean; model_id: string; text_generation_options?: TextGenerationOptions; scene_ids: string[]; skill_ids?: string[]; inherit_scene_references?: boolean; refresh_scene_ids?: string[]; design_id?: string | null; unit_keys?: string[]; skip_unit_keys?: string[]; retry_unit?: { unit_key: string; token: string }; retry_units?: Array<{ unit_key: string; token: string }>; run_id?: string; trusted_terminal_transport?: boolean }, context: {
   script: (projectId: string) => { outline: string; characters: string; artifacts?: ScriptArtifact[]; scenes: ScriptScene[] };
   generateText: (projectId: string, modelId: string, prompt: string, contract?: OutputContract, signal?: AbortSignal) => Promise<string>;
   selectSkills?: CreationSkillSelector;
@@ -889,7 +892,7 @@ export async function analyzeVisualProfiles(id: string, data: { reuse_validated_
   const namespace = `visual-profiles:${creativeInputHash([designId, data.scene_ids])}` + (data.run_id ? ':run:' + data.run_id : '')
   return withModelAdmission(`creative:visual-profiles:${id}:${creativeInputHash([designId, data.scene_ids])}`, signal, async () => {
   const preparation = visualProfilePreparationState({ projectId: id, namespace, source, task: useCatalog ? catalogPrompt : prompt,
-    model: creativeModelIdentity(data.model_id), selectedIds: data.skill_ids })
+    model: data.text_generation_options?.reasoning ? creativeInputHash([modelIdentity, data.text_generation_options.reasoning]) : modelIdentity, selectedIds: data.skill_ids })
   checkCurrent()
   if (!data.restart) preparation.assertUnblocked()
   const rules = await preparation.rules(() => resolveCreationSkillContext({ stage: 'visual_assets', task: useCatalog ? catalogPrompt : prompt, selectedIds: data.skill_ids,
@@ -916,8 +919,9 @@ export async function analyzeVisualProfiles(id: string, data: { reuse_validated_
           shots: scopedShots,
         })
   }
-    const identity = { version: useCatalog ? 2 : 1, prompt: useCatalog ? creativeInputHash({ source, catalogPrompt }) : prompt, rules: rules.text, model: creativeModelIdentity(data.model_id) }
-    if (useCatalog && !data.restart && one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_unit_checkpoints'")) {
+    const identity = { version: useCatalog ? 2 : 1, prompt: useCatalog ? creativeInputHash({ source, catalogPrompt }) : prompt, rules: rules.text, model: modelIdentity,
+      ...(data.text_generation_options?.reasoning ? { reasoning: data.text_generation_options.reasoning } : {}) }
+    if (useCatalog && !data.restart && !data.text_generation_options?.reasoning && one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_unit_checkpoints'")) {
       const legacy = { version: 1, prompt, rules: rules.text, model: creativeModelIdentity(data.model_id) }
       const legacyHash = creativeInputHash({ version: 1, identity: legacy })
       const previous = one<{ payload: string }>('SELECT payload FROM model_unit_checkpoints WHERE project_id=? AND namespace=? AND identity_hash=?', id, namespace, legacyHash)
@@ -944,10 +948,14 @@ export async function analyzeVisualProfiles(id: string, data: { reuse_validated_
       units: Math.max(scenes.length, plannedShots.length), inputChars: useCatalog ? catalogPrompt.length : prompt.length, signal: requestSignal }, async budgetSignal => {
     signal = budgetSignal
     if (!useCatalog) {
+      const validateInline = (value: z.infer<typeof profileAnalysisDraft>) => {
+        if (value.visual_coverage) value.visual_coverage = canonicalizeCoverageObjects(value.visual_coverage, value.profiles)
+        validate(value)
+      }
       draft = await steps.run('profiles', '整理视觉设定', identity,
         () => generateStructuredOutput('visual_profiles', analysisSchema,
-          (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n【本次任务】\n' + prompt, { signal, validate, correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' + (data.require_visual_coverage ? visualReferenceCoverageInstructions : '') }),
-        value => { const result = analysisSchema.parse(value); validate(result); return result })
+          (text, contract) => context.generateText(id, data.model_id, text, contract, signal), rules.text + '\n【本次任务】\n' + prompt, { signal, validate: validateInline, correctionInstructions: '逐项检查 profiles：填写 base_profile_id 或 base_draft_key 的派生设定，必须在同一对象的 state_delta 中写出相对基础设定的具体变化，不能为 null、空字符串或空白，也不能只写在 definition 或 variant 中。依据原任务、场次和已有设定补全；已有派生设定保留原基础关系与变化说明，不得为通过校验删除真实派生关系或编造变化。独立设定的两个基础字段省略或为 null，state_delta 省略或为空。保留全部设定与每个镜头的 shot_usage，返回完整 profiles。' + (data.require_visual_coverage ? visualReferenceCoverageInstructions : '') }),
+        value => { const result = analysisSchema.parse(value); validateInline(result); return result })
     } else {
       // First lock shared object identities and base relationships. Definitions
       // and per-shot usage are then generated in dependency order, never per
@@ -1276,9 +1284,25 @@ export function registerVisualProfileRoutes(app: FastifyInstance, context: {
   })
   app.post('/api/projects/:id/visual-profiles/analyze', async (request, reply) => withCreativeRequest(request, reply, '视觉设定整理', async signal => {
     const { id } = idParams.parse(request.params)
-    const data = z.object({ model_id: z.string().min(1), scene_ids: z.array(z.string().min(1)).min(1).max(100), skill_ids: skillIdsInput.optional(),
+    const data = z.object({ model_id: z.string().min(1), text_generation_options: textGenerationOptionsInput, scene_ids: z.array(z.string().min(1)).min(1).max(100), skill_ids: skillIdsInput.optional(),
       design_id: z.string().min(1).nullable().optional(), restart: z.boolean().optional() }).strict().parse(request.body)
-    return analyzeVisualProfiles(id, data, context, signal)
+    required<Project>('projects', id)
+    const scope = creativeInputHash([data.design_id ?? null, [...data.scene_ids].sort(), data.skill_ids ?? null])
+    return withModelAdmission(`visual-reasoning:${id}:${scope}`, signal, async () => {
+      const store = generationUnitStore(id, 'visual-organizer-reasoning', scope)
+      const previous = data.restart ? undefined : store.read().steps.options?.value as { model_id: string; signature: string; options?: TextGenerationOptions } | undefined
+      const options = previous ? previous.options : data.text_generation_options
+      const signature = creativeModelIdentity(data.model_id)
+      if (previous && (previous.model_id !== data.model_id || previous.signature !== signature ||
+        data.text_generation_options?.reasoning && data.text_generation_options.reasoning !== (options?.reasoning ?? 'inherit'))) {
+        throw Object.assign(new Error('模型或推理等级已变化，请使用「重新整理」开始新任务。'), { statusCode: 409 })
+      }
+      const withReasoning = bindTaskReasoningById(data.model_id, options)
+      store.save({ steps: { options: { input_hash: scope, value: { model_id: data.model_id, signature, options } } } })
+      const result = await withReasoning(() => analyzeVisualProfiles(id, { ...data, text_generation_options: options }, context, signal))
+      store.clear()
+      return result
+    })
   }))
   app.post('/api/projects/:id/visual-profiles', async request => {
     const { id } = idParams.parse(request.params)

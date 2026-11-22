@@ -4,6 +4,7 @@ import { Check, Trash2, WandSparkles, X } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Model, ProjectDetail, Provider, VisualProfileDraft } from '../../shared/api/api'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import DirectorMessageTiming, { finishMessageTiming, type MessageTiming } from '../script/DirectorMessageTiming'
 import { useCreativeSkills } from '../skills/useCreativeSkills'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
@@ -38,6 +39,7 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
   const [index, setIndex] = useState(0)
   const [busy, setBusy] = useState(false)
   const { modelId, selectModel } = useSharedModelSelection('text', availableModels, { locked: busy })
+  const reasoning = useTaskReasoning(availableModels.find(model => model.id === modelId))
   const [draftModelId, setDraftModelId] = useState('')
   const [error, setError] = useState('')
   const [status, setStatus] = useState<(MessageTiming & { phase: 'running' | 'complete' | 'failed' | 'cancelled' }) | null>(null)
@@ -63,7 +65,7 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
     const startedAt = performance.now(), signature = sourceVersion(detail, designId)
     setBusy(true); setError(''); setStatus({ phase: 'running', processing_started_at: startedAt })
     try {
-      const result = await api<{ profiles: VisualProfileDraft[]; skills?: Array<{ name: string }>; skill_assignment?: SkillAssignment }>(`/projects/${detail.id}/visual-profiles/analyze`, { ...json('POST', { ...(restart ? { restart: true } : {}), model_id: modelId, scene_ids: sceneIds, skill_ids: skillControl.requestIds('visual_assets'), ...(designId ? { design_id: designId } : {}) }), signal: controller.signal })
+      const result = await api<{ profiles: VisualProfileDraft[]; skills?: Array<{ name: string }>; skill_assignment?: SkillAssignment }>(`/projects/${detail.id}/visual-profiles/analyze`, { ...json('POST', { ...(restart ? { restart: true } : {}), model_id: modelId, ...reasoning.request, scene_ids: sceneIds, skill_ids: skillControl.requestIds('visual_assets'), ...(designId ? { design_id: designId } : {}) }), signal: controller.signal })
       if (controller.signal.aborted) return
       if (signature !== sourceVersion(currentDetail.current, designId)) throw new Error('剧本资料已发生变化，请重新整理，避免使用过期草稿。')
       const next = newVisualProfileDrafts(result.profiles, (currentDetail.current.visual_profiles || []).filter(profile => (profile.design_id || null) === (designId || null)))
@@ -112,6 +114,7 @@ export default function VisualProfileOrganizer({ detail, models, providers, desi
           profiles={scopedProfiles} drafts={drafts} scenes={scenes} /></fieldset>
       </> : <fieldset disabled={busy}>
         <Select label="文本模型" aria-label="整理设定的文本模型" value={modelId || null} placeholder="选择文本模型" allowDeselect={false} data={availableModels.map(model => ({ value: model.id, label: model.name }))} comboboxProps={visualDropdownProps} onChange={value => value && selectModel(value)} />
+        <TaskReasoningSelect reasoning={reasoning} disabled={busy} />
         <MultiSelect label={`整理场次 · ${sceneIds.length} / ${scenes.length}`} aria-label="整理场次" searchable maxValues={100} value={sceneIds} data={scenes.map(scene => ({ value: scene.id, label: `${scene.episode_number ? `第 ${scene.episode_number} 集 · ` : ''}${scene.heading}` }))} comboboxProps={visualDropdownProps} onChange={setSceneIds} />
         {scenes.length > 100 && <p className="pc-visual-note">每批最多 100 个场次，请分批整理。</p>}
         <CreativeSkillSelector stage="visual_assets" policies={skillControl.policies} ids={skillControl.ids('visual_assets')} onChange={values => skillControl.change('visual_assets', values)}

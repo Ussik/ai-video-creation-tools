@@ -357,7 +357,8 @@ test('fresh project snapshots preserve viewport, selection, media and connection
     assert.match(view.container.querySelector('[data-id="profile"] .pc-node-foot')!.textContent!, /生成失败/)
     assert.deepEqual(geometry(view.container), before, 'job status updates retain node geometry and selection')
     assert.deepEqual(requests, [{ path: '/api/projects/refresh/canvas', method: 'GET' }])
-    assert.match(view.container.querySelector('.pc-save-status')!.textContent!, /已保存/)
+    assert.equal(view.container.querySelector('.pc-save-status'), null, 'an idle canvas does not show a persistent save badge')
+    assert.equal(view.container.querySelector('.pc-notice'), null, 'refreshing project data does not announce a save')
   } finally { await view.destroy() }
 })
 
@@ -1464,6 +1465,19 @@ test('new canvas starts with its project script and switches preserve independen
     assertScriptOnly(view.container)
     assert.equal(dom.window.localStorage.getItem('project-active-canvas:refresh'), 'canvas-2')
     assert.ok(requests.some(item => item.path === '/api/projects/refresh/canvases/canvas-2' && item.method === 'PUT'))
+  } finally { await view.destroy() }
+})
+
+test('autosave success is announced briefly without leaving a save badge', async t => {
+  mockMultipleCanvases(t)
+  const view = await mount(propsFor(detail, 0, []))
+  try {
+    await act(() => button(view.container, '添加文本').click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 750)) })
+    assert.match(view.container.querySelector('.pc-notice')!.textContent!, /画布已保存/)
+    assert.equal(view.container.querySelector('.pc-save-status'), null)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 3050)) })
+    assert.equal(view.container.querySelector('.pc-notice'), null)
   } finally { await view.destroy() }
 })
 

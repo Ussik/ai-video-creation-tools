@@ -24,16 +24,21 @@ export const automaticOutputRecoveryActive = () => scopes.getStore() !== undefin
 export function automaticOutputRecoveryCompleted(task: string): boolean {
   return scopes.getStore()?.state.requests.some(r => r.task === task && r.status === 'completed') === true
 }
+export type AutomaticOutputRecoveryContext = { evidenceFingerprint?: unknown; upstreamVersions?: unknown }
+
 /** Called only at a fresh dispatch, after exact completed-response replay and
  * before persisting its delivery intent. A reservation survives unknown delivery
  * and process restart; neither this module nor a refresh grants another send. */
-export function reserveAutomaticOutputRecovery(task: string, text: string, contract: unknown, reference: boolean) {
+export function reserveAutomaticOutputRecovery(task: string, text: string, contract: unknown, reference: boolean, context?: AutomaticOutputRecoveryContext) {
   const scope = scopes.getStore()
   if (!scope) return undefined
   const { state, persist } = scope
-  const key = createHash('sha256').update(JSON.stringify([task, text, contract])).digest('hex')
+  // Include evidence range and upstream versions in fingerprint to detect context changes
+  const request = [task, text, contract]
+  const originalKey = createHash('sha256').update(JSON.stringify(request)).digest('hex')
+  const key = context ? createHash('sha256').update(JSON.stringify([...request, context.evidenceFingerprint, context.upstreamVersions])).digest('hex') : originalKey
   const reserved = text.length + 64_000
-  if (state.requests.some(r => r.key === key) || state.requests.length >= state.max_requests ||
+  if (state.requests.some(r => r.key === key || r.key === originalKey) || state.requests.length >= state.max_requests ||
     state.requests.filter(r => r.task === task).length >= state.max_task_requests ||
     state.requests.reduce((n, r) => n + r.reserved_chars, 0) + reserved > state.max_reserved_chars) {
     throw Object.assign(new Error('自动局部纠正已达预算或检测到相同纠正请求；成功结果和原回答已保留，未继续循环。'), {

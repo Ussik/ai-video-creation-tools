@@ -18,6 +18,7 @@ export const draftResolutionInput = z.object({ id: z.string().min(1).max(160), v
 export type PendingScriptDraft = {
   id: string; version: string; draft: WorkflowDraft; findings: ScriptDraftFinding[];
   request: Record<string, unknown>; source_version: string;
+  reasoning_model_signature?: string
   source_update?: ScriptSourceUpdate
   resolutions?: FindingResolutionRecord[]
   repair_history?: ScriptDraftRepairHistory

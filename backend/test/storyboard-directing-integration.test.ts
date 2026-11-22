@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import Fastify from 'fastify'
 import type { OutputContract } from '../src/modules/generation/model-output.js'
+import { TextProviderError } from '../src/infrastructure/providers/text-errors.js'
 import { beginTextRequest, createScriptRequestUsage, withTextRequestUsage } from '../src/infrastructure/providers/text-request-usage.js'
 import { notifyTextRequest } from '../src/infrastructure/providers/text-request-plan.js'
 import { StoryboardPlanningBudgetError } from '../src/modules/storyboard/storyboard-planning-budget.js'
@@ -870,7 +871,11 @@ test('background tasks expose a validated read-only candidate, deduplicate start
   assert.equal(finished.result.directing_review.status, 'passed')
   assert.equal(finished.candidate, undefined)
   const stored = JSON.parse(all<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', f.project.id, `storyboard-planning-task:${id}`)[0]!.payload)
-  assert.deepEqual(Object.keys(stored.steps), ['storyboard_task_budget:v1'], 'completed tasks compact duplicate rules and candidate text while retaining durable usage')
+  const stepKeys = Object.keys(stored.steps)
+  assert.equal(stepKeys.length, 3)
+  assert.ok(stepKeys.includes('storyboard_task_budget:v1'))
+  assert.equal(stepKeys.filter(key => /:outline:quality:v1:.*:report(?::structured_output:v1)?$/.test(key)).length, 2,
+    'completed tasks keep durable usage and the outline audit while compacting duplicate rules and candidate text')
   assert.equal(stored.steps['storyboard_task_budget:v1'].version, 1)
   assert.deepEqual(stored.steps['storyboard_task_budget:v1'].usage.pending_requests, [])
   assert.ok(finished.timings.generating >= 0); assert.ok(finished.timings.reviewing >= 0)
@@ -977,6 +982,66 @@ test('a failed second review retains the revised draft and re-review never regen
   assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_targeted_repair').length, 1)
   assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 3)
+  assertNoWrites(f.project.id)
+})
+
+test('unknown director review delivery returns a saveable draft and retains the dispatch without granting approval', async t => {
+  const f = await fixture(t, name => {
+    if (isPlanRequest(name)) return f.raw
+    const failure = new TextProviderError('director review disconnected', true, 'stream_read_error')
+    failure.delivery = 'accepted'
+    throw failure
+  })
+  const payload = { ...await taskInput(f), request_id: crypto.randomUUID() }
+  const taskUrl = `/api/projects/${f.project.id}/script/storyboard/tasks`
+  const start = await f.routes.inject({ method: 'POST', url: taskUrl, payload })
+  assert.equal(start.statusCode, 200, start.body)
+  const id = start.json().id, finished = await taskState(f.routes, f.project.id, id)
+  assert.equal(finished.status, 'succeeded')
+  assert.equal(finished.result.directing_review.status, 'review_inconclusive_no_action')
+  assert.equal(finished.result.directing_review.error.code, 'structured_initial_delivery_pending')
+  assert.equal(finished.result.scenes[0].shots.length, 2)
+  const stored = JSON.parse(all<{ payload: string }>('SELECT payload FROM script_step_checkpoints WHERE project_id=? AND namespace=?', f.project.id, `storyboard-planning-task:${id}`)[0]!.payload)
+  const reviewOutputKey = Object.keys(stored.steps).find(key => key.startsWith('director_review:structured_output:v1:'))
+  assert.ok(reviewOutputKey)
+  assert.ok(stored.steps[reviewOutputKey].initial_started.intent_id)
+  const repeated = await f.routes.inject({ method: 'POST', url: taskUrl, payload })
+  assert.equal(repeated.json().id, id)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_directing_review').length, 1)
+  const { signature, mode, instructions, scenes, directing_review: review } = finished.result
+  const commit = { signature, mode, instructions, review_id: review.review_id, request_id: crypto.randomUUID(),
+    scenes: scenes.map(({ scene_heading: _heading, ...scene }: { scene_heading: string }) => scene) }
+  const commitUrl = `/api/projects/${f.project.id}/script/storyboard/commit`
+  assert.equal((await f.routes.inject({ method: 'POST', url: commitUrl, payload: commit })).statusCode, 409)
+  assertNoWrites(f.project.id)
+  const saved = await f.routes.inject({ method: 'POST', url: commitUrl, payload: { ...commit, save_only: true } })
+  assert.equal(saved.statusCode, 200, saved.body)
+  assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.project.id).length, 2)
+})
+
+test('manual director review preserves the draft after an unconfirmed correction with no redispatch', async t => {
+  const f = await fixture(t, name => {
+    if (isPlanRequest(name)) return f.raw
+    if (name === 'storyboard_directing_review') {
+      const reviews = f.calls.filter(call => call.name === name).length
+      if (reviews === 1) return { issues: [] }
+      if (reviews === 2) return { issues: [{ severity: 'bad' }] }
+    }
+    const failure = new TextProviderError('review correction disconnected', true, 'stream_read_error')
+    failure.delivery = 'output_started'
+    throw failure
+  })
+  const planned = await f.plan()
+  assert.equal(planned.statusCode, 200, planned.body)
+  const { signature, mode, instructions, scenes } = planned.json()
+  const review = await f.routes.inject({ method: 'POST', url: `/api/projects/${f.project.id}/script/storyboard/review`, payload: {
+    signature, model_id: 'mock-text', mode, instructions, scenes: scenes.map(({ scene_heading: _heading, ...scene }: { scene_heading: string }) => scene),
+  } })
+  assert.equal(review.statusCode, 200, review.body)
+  assert.equal(review.json().status, 'review_inconclusive_no_action')
+  assert.equal(review.json().error.code, 'structured_initial_delivery_pending')
+  assert.equal(f.calls.filter(call => call.name.startsWith('storyboard_directing_review')).length, 3)
+  assert.equal(f.calls.filter(call => call.name === 'storyboard_scene_plan').length, 1)
   assertNoWrites(f.project.id)
 })
 

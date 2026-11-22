@@ -41,16 +41,25 @@ export function createSourceCharacterEvidence(state: Pick<ScriptSourceAnalysis, 
     return sectionIds.some(id => candidates.has(id))
   }
   const directoryNames = new Set(state.sections.flatMap(section => section.characters.map(character => nameKey(character.name))))
+  const isLikelyOccupationalSuffix = (suffix: string) => {
+    // Heuristic: likely occupational if contains common role-indicating suffixes
+    // and is not an explicit identity clarification
+    const hasRoleIndicator = /(?:长|主|柜|官|员|师|手|者|人|工)$/.test(suffix)
+    const notIdentityClarification = !/(?:又名|真名|本名|化名|实为|即为|未知|不详|本人|就是)/.test(suffix)
+    const reasonableLength = suffix.length >= 2 && suffix.length <= 8
+    return hasRoleIndicator && notIdentityClarification && reasonableLength
+  }
+
   const coversDirectoryName = (character: Pick<ScriptSourceStory['characters'][number], 'name' | 'aliases' | 'section_ids'>, target: string) => {
     const key = nameKey(target), names = new Set([character.name, ...character.aliases].map(nameKey))
     if (names.has(key)) return true
     if (!directoryNames.has(key)) return false
     const role = /^([^()/]+)\(([^()/]+)\)$/u.exec(key)
     // Exact head + exact source heading in the record's own cited section.
-    // Only explicit occupational suffixes qualify; real aliases, ages, unknown
-    // identities and generic parentheses keep the stricter compound-name rule.
-    if (role && /(?:列车长|当铺主|掌柜|科长|调查员|巡夜官|馆主|店主|队长|局长)$/.test(role[2]!.trim()) &&
-      !/又名|真名|本名|化名|实为|即为|未知|不详/.test(role[2]!) && names.has(role[1]!.trim()) &&
+    // Use heuristic validation for occupational suffixes instead of hardcoded whitelist.
+    // This accepts "实习调查员", "副科长", "资深掌柜" etc.
+    if (role && isLikelyOccupationalSuffix(role[2]!.trim()) &&
+      names.has(role[1]!.trim()) &&
       supports(role[1]!.trim(), character.section_ids) && character.section_ids.some(id => sections[id]?.text.includes(key))) return true
     const pair = compoundNames(key)
     // Do not split targets or combine different characters. The entire label

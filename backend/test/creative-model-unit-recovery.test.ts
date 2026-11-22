@@ -14,7 +14,8 @@ import type { OutputContract } from '../src/modules/generation/model-output.js'
 const directory = await mkdtemp(join(tmpdir(), 'creative-unit-recovery-'))
 process.env.VIDEO_STUDIO_DATA_DIR = directory
 const { buildApp } = await import('../src/app.js')
-const { db, all, run } = await import('../src/infrastructure/database/db.js')
+const { db, all, run, required } = await import('../src/infrastructure/database/db.js')
+const { currentTaskReasoning } = await import('../src/infrastructure/providers/task-reasoning.js')
 const { registerStoryboardPlanningRoutes } = await import('../src/modules/storyboard/storyboard-planning.js')
 const { registerVisualProfileRoutes } = await import('../src/modules/visuals/visual-profiles.js')
 const { registerSkillRoutes } = await import('../src/modules/skills/skill-routes.js')
@@ -87,6 +88,33 @@ test('three-scene durable planning resumes only unfinished scenes, while a fresh
   assert.equal((await start({ signature: changed.json().signature })).status, 'succeeded')
   assert.deepEqual(calls.slice(prior), f.scenes.map(value => value.id))
   assert.equal(all('SELECT id FROM shots WHERE project_id=?', f.id).length, 0)
+})
+
+test('failed visual organization binds its reasoning until explicitly restarted', async t => {
+  const f = await project(1), isolated = routes(); t.after(() => isolated.close())
+  const channel = await create('/api/providers', { name: '视觉测试', base_url: 'https://fixture.invalid/v1' })
+  const model = await create('/api/models', { provider_id: channel.id, name: '视觉文本测试', remote_id: 'fixture', modality: 'text', protocol: 'chat_completions', settings: {
+    text_api: { mode: 'standard', max_output_tokens: 4096, reasoning: { enabled: true, mode: 'effort', default_level: 'medium',
+      levels: [{ level: 'medium', api_value: 'medium' }, { level: 'high', api_value: 'high' }] } },
+  } })
+  const observed: string[] = []
+  registerVisualProfileRoutes(isolated, { script, generateText: async (_id, modelId) => {
+    assert.equal(modelId, model.id)
+    observed.push(currentTaskReasoning(model, required('providers', channel.id)).effective)
+    throw transient()
+  } })
+  const invoke = (reasoning: 'high' | 'medium', restart = false) => isolated.inject({ method: 'POST', url: `/api/projects/${f.id}/visual-profiles/analyze`, payload: {
+    model_id: model.id, scene_ids: f.scenes.map(scene => scene.id), skill_ids: [], text_generation_options: { reasoning }, restart,
+  } })
+  assert.equal((await invoke('high')).statusCode, 422)
+  const firstCount = observed.length
+  assert.ok(firstCount > 0)
+  assert.ok(observed.every(level => level === 'high'))
+  assert.equal((await invoke('medium')).statusCode, 409)
+  assert.equal(observed.length, firstCount)
+  assert.equal((await invoke('medium', true)).statusCode, 422)
+  assert.ok(observed.length > firstCount)
+  assert.ok(observed.slice(firstCount).every(level => level === 'medium'))
 })
 
 test('large visual analysis keeps the shared object catalog and base definition across a variant failure', async t => {

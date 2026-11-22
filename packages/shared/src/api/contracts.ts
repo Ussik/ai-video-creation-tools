@@ -259,6 +259,7 @@ export interface Provider {
   enabled: boolean
 }
 export interface Model {
+  task_reasoning_options?: ReturnType<typeof import('../models/task-reasoning.js').taskReasoningOptions>
   id: string
   provider_id: string
   name: string
@@ -423,6 +424,7 @@ export interface CanvasPreparationRecovery {
   run_id: string
   state: 'idle' | 'running' | 'partial' | 'complete' | 'failed' | 'cancelled' | 'unknown'
   model_id?: string
+  text_generation_options?: import('../models/task-reasoning.js').TextGenerationOptions
   full_scope: boolean
   can_retry_failed: boolean; retry_reason: string; retryable_unit_keys: string[]
   can_continue: boolean; continue_reason: string; pending_unit_keys: string[]

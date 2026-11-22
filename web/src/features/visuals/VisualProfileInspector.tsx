@@ -14,9 +14,10 @@ type Props = {
   onBusyChange: (busy: boolean) => void; onSaved: (profile: VisualProfile) => void;
   onDeleted: (profile: VisualProfile) => void; onOpenCanvas: (profile: VisualProfile) => void;
   models?: Model[]; providers?: Provider[]; designId?: string | null;
+  onLocateProfile?: (profile: VisualProfile) => void; canvasActionLabel?: string;
 }
 
-export default function VisualProfileInspector({ profile, inCanvas, detail, models = [], providers, designId, generating, onRefresh, onClose, onBindings, onDirtyChange, onBusyChange, onSaved, onDeleted, onOpenCanvas }: Props) {
+export default function VisualProfileInspector({ profile, inCanvas, detail, models = [], providers, designId, generating, onRefresh, onClose, onBindings, onDirtyChange, onBusyChange, onSaved, onDeleted, onOpenCanvas, onLocateProfile, canvasActionLabel }: Props) {
   const scopeId = profile ? profile.design_id || null : designId || null
   const scopedProfiles = (detail.visual_profiles || []).filter(item => (item.design_id || null) === scopeId)
   const creationScenes = detail.script.scenes.filter(scene => {
@@ -97,9 +98,9 @@ export default function VisualProfileInspector({ profile, inCanvas, detail, mode
           })()
         }}>加载最新设定</Button></div>}
         <fieldset disabled={busy || generating}><VisualProfileFields value={draft} onChange={patch => setDraft(current => ({ ...current, ...patch }))}
-          profiles={scopedProfiles} profileId={profile?.id} onLocateBase={dirty ? undefined : onOpenCanvas} scenes={profile ? undefined : creationScenes} /></fieldset>
+          profiles={scopedProfiles} profileId={profile?.id} onLocateBase={dirty ? undefined : onLocateProfile || onOpenCanvas} scenes={profile ? undefined : creationScenes} /></fieldset>
         {inheritance?.waitingProfile && <div className="pc-profile-inheritance is-waiting" role="status"><span>请先确认「{visualProfileLabel(inheritance.waitingProfile)}」的基础图，再生成当前状态。</span>
-          <Button variant="default" size="xs" disabled={busy || dirty} onClick={() => onOpenCanvas(inheritance.waitingProfile!)}>前往基础图</Button></div>}
+          <Button variant="default" size="xs" disabled={busy || dirty} onClick={() => (onLocateProfile || onOpenCanvas)(inheritance.waitingProfile!)}>前往基础图</Button></div>}
         {error && <p className="pc-visual-error" role="alert">{error}</p>}
         {profile && <VisualReferenceAssets profile={profile} detail={detail} models={models} providers={providers} disabled={dirty || saving || generating}
           disabledReason={dirty ? '先保存设定，再添加或确认对应版本的参考图。' : generating ? '信息图生成完成后可管理独立参考。' : undefined}
@@ -112,7 +113,7 @@ export default function VisualProfileInspector({ profile, inCanvas, detail, mode
         </div>}
       </div>
       <footer>{profile && <Tooltip label={shots.length ? '先移除镜头引用后可删除' : dependents.length ? '先调整状态设定的继承关系后可删除' : '删除设定'}><ActionIcon variant="subtle" aria-label="删除设定" disabled={busy || generating || !!shots.length || !!dependents.length} onClick={() => void remove()}><Trash2 size={15} /></ActionIcon></Tooltip>}
-        {profile && <Button variant="default" leftSection={<ArrowUpRight size={14} />} disabled={dirty || busy} onClick={() => onOpenCanvas(profile)}>{inCanvas ? '定位节点' : '加入画布'}</Button>}
+        {profile && <Button variant="default" leftSection={<ArrowUpRight size={14} />} disabled={dirty || busy} onClick={() => onOpenCanvas(profile)}>{canvasActionLabel || (inCanvas ? '定位节点' : '加入画布')}</Button>}
         <Button variant="default" leftSection={<Save size={14} />} disabled={(!dirty && profile?.definition_status !== 'draft') || busy || generating || !validVisualProfile(draft) || !!relationError} onClick={() => void save()}>{!profile ? '创建设定' : profile.definition_status === 'draft' ? '确认设定' : '保存设定'}</Button></footer>
     </aside>
     {dialog.dialog}

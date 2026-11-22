@@ -18,12 +18,12 @@ async function post(url: string, payload: object) {
   assert.equal(response.statusCode, 200, response.body)
   return response.json()
 }
-async function upload(id: string, model: string | undefined, content: string, filename = 'story.md') {
+async function upload(id: string, model: string | undefined, content: string, filename = 'story.md', expectedStatus = 200) {
   const boundary = 'restore-source-analysis'
   const response = await app.inject({ method: 'POST', url: `/api/projects/${id}/script/source${model ? '?model_id=' + model : ''}`,
     headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload: Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: text/plain\r\n\r\n${content}\r\n--${boundary}--\r\n`) })
-  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.statusCode, expectedStatus, response.body)
   return response.json()
 }
 async function read(id: string) { return (await app.inject({ method: 'GET', url: `/api/projects/${id}/script/source` })).json() }
@@ -65,9 +65,8 @@ test('upload restores durable analysis, progress and reusable story/settings/ind
   const running = await read(project.id)
   assert.equal(running.analysis.status, 'running')
   assert.equal(running.analysis.progress.stage, 'reading')
-  const sameRunning = await upload(project.id, model.id, text)
-  assert.equal(sameRunning.updated_at, uploaded.updated_at)
-  assert.equal(sameRunning.analysis.id, uploaded.analysis.id)
+  const sameRunning = await upload(project.id, model.id, text, 'story.md', 409)
+  assert.equal(sameRunning.code, 'script_source_analysis_active')
   const live = await post(`/api/projects/${project.id}/script/source/analysis`, { model_id: 'another-model', source_updated_at: uploaded.updated_at })
   assert.equal(live.id, uploaded.analysis.id)
   assert.equal(calls, 1)

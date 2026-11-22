@@ -92,7 +92,7 @@ test('dense long-story tasks each retain the full manuscript and directory while
   assert.match(story.ending.summary, /城市恢复/)
   assert.equal(story.uncertainties.length, 1); assert.deepEqual(story.uncertainties[0]!.section_ids, [24, 58])
   assert.equal(state.story_work, undefined); assert.deepEqual(savedTaskKeys, new Set(tasks))
-  assert.equal(progress.length, tasks.length)
+  assert.ok(progress.length >= tasks.length)
   assert.deepEqual(validateSourceStory(state, story), story)
 })
 

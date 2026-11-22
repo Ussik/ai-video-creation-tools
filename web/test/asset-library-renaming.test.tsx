@@ -67,7 +67,8 @@ async function mount(t: TestContext) {
       return Response.json(detail.assets[0])
     }
     if (path === '/api/projects') return Response.json([detail])
-    if (path === '/api/providers' || path === '/api/models' || path.endsWith('/canvases')) return Response.json([])
+    if (path === '/api/providers' || path === '/api/models') return Response.json([])
+    if (path.endsWith('/canvases')) return Response.json([{ id: detail.id, name: '画布 1', is_default: true }])
     assert.equal(path, '/api/projects/project-one', `unexpected request ${path}`)
     detailReads++
     if (delayNextDetail) {
@@ -135,5 +136,20 @@ test('Escape dismisses only the rename opened from a preview and leaves its orig
     assert.equal(document.querySelector('.mantine-Modal-title')?.textContent, '面具.png')
     assert.equal(document.querySelector('.library-asset-title')?.textContent, '面具.png')
     assert.equal(view.mutations.length, 0)
+  } finally { await view.cleanup() }
+})
+
+test('choosing a canvas from the asset preview is read-only until confirmed', async t => {
+  const view = await mount(t)
+  try {
+    await click(document.querySelector<HTMLElement>('[aria-label="预览 面具.png"]')!)
+    await click(button('加入画布', document.querySelector('.asset-preview-actions')!))
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent!, /目标画布/)
+    assert.equal(dialog.querySelector('input')?.value, '画布 1')
+    await click(button('取消', dialog))
+    assert.equal(document.querySelectorAll('[role="dialog"]').length, 0)
+    assert.equal(view.mutations.length, 0)
+    assert.ok(view.container.querySelector('.asset-library-page'))
   } finally { await view.cleanup() }
 })

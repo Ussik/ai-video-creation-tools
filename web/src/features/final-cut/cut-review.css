@@ -1,5 +1,8 @@
 .cut-review-modal .mantine-Modal-content {
-  max-height: min(88vh, 900px);
+  display:flex;
+  flex-direction:column;
+  max-height: min(90dvh, 980px);
+  overflow:hidden;
   border: 1px solid var(--fc-border);
   background: var(--fc-panel);
   color: var(--fc-text);
@@ -12,11 +15,16 @@
 
 .cut-review-modal .mantine-Modal-title {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .cut-review-modal .mantine-Modal-body {
-  padding: 17px 20px 21px;
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
+  padding:0;
+  overflow:hidden;
 }
 
 .cut-review-overview {
@@ -56,9 +64,9 @@
 
 .cut-review-alert,
 .cut-review-stale {
-  border: 1px solid #665744;
-  background: #302a22;
-  color: #e6c38d;
+  border: 1px solid color-mix(in srgb,var(--fc-warning) 25%,transparent);
+  background:var(--fc-warning-soft);
+  color:var(--fc-warning);
 }
 
 .cut-review-alert { margin-bottom: 12px; }
@@ -66,7 +74,7 @@
 .cut-review-alert svg,
 .cut-review-stale svg,
 .cut-review-success svg { flex: none; margin-top: 1px; }
-.cut-review-success { background: #18372d; color: #83ddb4; }
+.cut-review-success { background:var(--fc-success-soft); color:var(--fc-success); }
 .cut-review-empty { padding: 40px 15px; text-align: center; color: var(--fc-text-secondary); font-size: 12px; }
 
 .cut-review-layout {
@@ -142,8 +150,16 @@
 }
 
 @media (max-width: 540px) {
-  .cut-review-modal .mantine-Modal-body { padding: 13px; }
+  .cut-review-modal .cut-review-scroll { padding:18px; }
   .cut-review-frames, .cut-review-script-context { grid-template-columns: 1fr; }
   .cut-review-script-context .cut-review-cut-note { grid-column: auto; }
-  .cut-review-actions .mantine-Button-root { flex: 1 1 100%; }
+  .cut-review-actions .mantine-Button-root { flex:1 1 auto; height:auto; min-height:36px; padding-block:8px; }
+  .cut-review-actions .mantine-Button-label { white-space:normal; line-height:1.5; }
 }
+
+.cut-review-modal .mantine-Modal-header { flex:none; }
+.cut-review-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:22px 24px 26px; }
+.cut-review-modal .cut-review-actions { flex:none; margin:0; padding:16px 24px; border-top:1px solid var(--fc-border-soft); background:var(--fc-panel); }
+.cut-review-modal .cut-review-actions > span { max-width:330px; }
+@media (max-width:740px) { .cut-review-modal .cut-review-actions > span { flex:1 0 100%; max-width:none; } }
+@media (max-width:540px) { .cut-review-modal .cut-review-actions { padding:14px 18px; } }

@@ -5,6 +5,7 @@ import type { ClipStoryboardCommitInput, ClipStoryboardContext, ClipStoryboardPl
 import { api, json, type Model, type ProjectDetail, type ScriptCanvasResult } from '../../shared/api/api'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import CreativeSkillSelector from '../skills/CreativeSkillSelector'
 import './clip-storyboard-planner.css'
 
@@ -49,6 +50,7 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
   const locked = !!phase || guarding
   const settingsLocked = locked || !!savedResult
   const { modelId: currentModel, selectModel } = useSharedModelSelection('text', eligibleModels, { active: opened, locked: settingsLocked })
+  const reasoning = useTaskReasoning(eligibleModels.find(model => model.id === currentModel))
   const automaticCount = String(shotsCount).trim() === ''
   const validDuration = Number.isInteger(Number(duration)) && Number(duration) >= 1 && Number(duration) <= 120
   const validCount = automaticCount || Number.isInteger(Number(shotsCount)) && Number(shotsCount) >= 1 && Number(shotsCount) <= 30
@@ -119,7 +121,7 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
     const active = () => live.current && turn === serial.current && !abort.signal.aborted
     setPhase('plan'); setError(''); setResult(null)
     const input: ClipStoryboardPlanInput = { signature: context.signature, source_text: sourceText.trim(), total_duration: Number(duration), instructions,
-      model_id: currentModel, ...(!automaticCount ? { shots_count: Number(shotsCount) } : {}), ...(manualSkills !== null ? { skill_ids: manualSkills } : {}),
+      model_id: currentModel, ...reasoning.request, ...(!automaticCount ? { shots_count: Number(shotsCount) } : {}), ...(manualSkills !== null ? { skill_ids: manualSkills } : {}),
       ...(targetVideoModelId ? { target_video_model_id: targetVideoModelId } : {}) }
     try {
       const value = await api<ClipStoryboardResult>(`/projects/${detail.id}/storyboard/clip/plan`, { ...json('POST', input), signal: abort.signal })
@@ -148,7 +150,7 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
     try {
       const report = await api<NonNullable<ClipStoryboardResult['directing_review']>>(`/projects/${detail.id}/storyboard/clip/review`, { ...json('POST', {
         signature: candidate.signature, source_text: candidate.source_text, total_duration: candidate.total_duration, instructions: candidate.instructions,
-        shots: candidate.shots, model_id: currentModel, ...(candidate.target_video_model_id ? { target_video_model_id: candidate.target_video_model_id } : {}),
+        shots: candidate.shots, model_id: currentModel, ...reasoning.request, ...(candidate.target_video_model_id ? { target_video_model_id: candidate.target_video_model_id } : {}),
       }), signal: abort.signal })
       if (live.current && turn === serial.current && !abort.signal.aborted) setResult(current => current === candidate ? { ...current, directing_review: report } : current)
     } catch (issue) { if (live.current && turn === serial.current && !abort.signal.aborted) setError(errorText(issue)) }
@@ -202,7 +204,8 @@ function ClipStoryboardPlannerContent({ opened, onClose, detail, models, onRefre
             <NumberInput label="建议镜头数" aria-label="建议镜头数" description="可选，1–30 镜" inputWrapperOrder={['label', 'input', 'description', 'error']} placeholder="自动分析" value={shotsCount} min={1} max={30} allowDecimal={false} disabled={settingsLocked}
               onChange={value => { if (value !== shotsCount) void changeSettings(() => setShotsCount(value)) }} />
             <Select className="clip-storyboard-model-field" label="规划文本模型" aria-label="规划文本模型" data={eligibleModels.map(model => ({ value: model.id, label: model.name }))} value={currentModel || null} placeholder="选择文本模型" allowDeselect={false} disabled={settingsLocked} comboboxProps={{ zIndex: 370 }}
-              onChange={value => { if (value && value !== currentModel) void changeSettings(() => selectModel(value)) }} /></div>
+              onChange={value => { if (value && value !== currentModel) void changeSettings(() => selectModel(value)) }} />
+            <TaskReasoningSelect reasoning={reasoning} disabled={settingsLocked} zIndex={370} /></div>
           {!eligibleModels.length && <p className="clip-storyboard-help">请先在模型设置中启用一个文本模型。</p>}
           <Select label="目标视频模型（可选）" aria-label="目标视频模型" placeholder="尚未指定，使用通用制作约束" clearable value={targetVideoModelId || null}
             data={videoModels.map(model => ({ value: model.id, label: model.name }))} disabled={settingsLocked} comboboxProps={{ zIndex: 370 }}

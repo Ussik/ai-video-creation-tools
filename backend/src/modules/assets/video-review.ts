@@ -1,14 +1,17 @@
+import { bindTaskReasoning, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import type { VideoReviewReport } from '@video-studio/shared/media/video-review'
+import type { VideoReviewReport, VideoReviewResult } from '@video-studio/shared/media/video-review'
 import { supportsDoubaoVideoAnalysis } from '@video-studio/shared/models/video-analysis-settings'
 import { all, db, newId, now, one, required, run, type Asset, type Model, type Provider, type Shot } from '../../infrastructure/database/db.js'
 import { parse } from '../../infrastructure/http/request.js'
 import { streamText, type TextStreamRequest } from '../../infrastructure/providers/providers.js'
+import { TextProviderError } from '../../infrastructure/providers/text-errors.js'
 import { decryptKey } from '../../infrastructure/security/secrets.js'
 import { generateStructuredOutput } from '../generation/model-output.js'
+import { reportModelResult } from '../generation/model-result-observation.js'
 import { creativeInputHash, creativeModelIdentity } from '../skills/creative-model-state.js'
 import { generationUnitStore } from '../generation/generation-unit-store.js'
 import { createGenerationSteps } from '../script/script-generation-steps.js'
@@ -21,8 +24,8 @@ export const VIDEO_REVIEW_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS video_reviews
   signature TEXT NOT NULL, report TEXT NOT NULL, input_context TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
 ); CREATE INDEX IF NOT EXISTS video_reviews_by_asset ON video_reviews(project_id,asset_id,created_at);`
 const ids = z.object({ id: z.string().min(1).max(100), assetId: z.string().min(1).max(100) })
-const input = z.object({ model_id: z.string().min(1).max(100), shot_id: z.string().min(1).max(100).nullable().optional(),
-  instructions: z.string().trim().max(4000).default('') }).strict()
+const input = z.object({ model_id: z.string().min(1).max(100), text_generation_options: textGenerationOptionsInput, shot_id: z.string().min(1).max(100).nullable().optional(),
+  instructions: z.string().trim().max(4000).default(''), resume_review_id: z.string().regex(/^partial-[a-f0-9]{64}$/).optional() }).strict()
 const category = z.enum(['action', 'continuity', 'composition', 'style', 'dialogue_audio'])
 const time = z.number().int().min(0).max(60_000)
 const prose = z.string().trim().min(1).max(2000)
@@ -85,6 +88,7 @@ type Dependencies = {
   prepareFrames?: typeof reviewContactSheets
   probe?: typeof reviewVideoDuration
   nativeVideo?: typeof reviewNativeVideo
+  timeoutMs?: number
 }
 
 export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: Dependencies = {}): void {
@@ -127,21 +131,24 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
     const shot = associatedShot(id, asset, body.shot_id)
     const model = required<Model>('models', body.model_id), provider = required<Provider>('providers', model.provider_id)
     if (model.modality !== 'text' || !model.enabled || model.archived || !provider.enabled || provider.archived || provider.adapter !== 'http') fail('请选择已启用且提供商可用的视频或图片理解模型')
+    const withReasoning = bindTaskReasoning(model, provider, body.text_generation_options)
     let settings: Record<string, unknown>
     try { settings = JSON.parse(model.settings) as Record<string, unknown> } catch { return fail('模型配置无效') }
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) fail('模型配置无效')
     const native = supportsDoubaoVideoAnalysis({ ...model, settings }) || settings.supports_video === true && model.protocol === 'chat_completions'
     if (!native && (settings.supports_vision !== true || !['responses', 'chat_completions'].includes(model.protocol))) fail('当前模型未启用视频理解或图片理解，无法检查实际画面')
-    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(new Error('成片复核超时')), 180_000)
+    const controller = new AbortController(), deadline = new AbortController()
+    const signal = AbortSignal.any([controller.signal, deadline.signal])
+    const timeout = setTimeout(() => deadline.abort(new Error('成片复核超时')), dependencies.timeoutMs ?? 180_000)
     timeout.unref()
     const abort = () => { if (!reply.raw.writableEnded) controller.abort(new DOMException('成片复核已取消', 'AbortError')) }
     request.raw.once('aborted', abort); reply.raw.once('close', abort)
     try {
-      const startSignature = await signature(asset, shot), location = await reviewMediaLocation(asset, controller.signal)
-      const duration = await (dependencies.probe ?? reviewVideoDuration)(location, controller.signal)
+      const startSignature = await signature(asset, shot), location = await reviewMediaLocation(asset, signal)
+      const duration = await (dependencies.probe ?? reviewVideoDuration)(location, signal)
       const input_mode = native ? 'native_video' as const : 'sampled_frames' as const
-      const media = native ? { video: await (dependencies.nativeVideo ?? reviewNativeVideo)(location, duration, controller.signal), sample_times_ms: [] as number[] }
-        : await (dependencies.prepareFrames ?? reviewContactSheets)(location, duration, controller.signal)
+      const media = native ? { video: await (dependencies.nativeVideo ?? reviewNativeVideo)(location, duration, signal), sample_times_ms: [] as number[] }
+        : await (dependencies.prepareFrames ?? reviewContactSheets)(location, duration, signal)
       let generation: unknown = null
       const job = one<{ request: string; model_id: string | null }>('SELECT request,model_id FROM jobs WHERE result_asset_id=? AND project_id=? ORDER BY created_at DESC LIMIT 1', assetId, id)
       if (job) {
@@ -152,18 +159,23 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
         video_prompt: shot.video_prompt, cut_note: shot.cut_note, edit_duration_seconds: shot.duration } : null,
         generation, actual_generation_prompt: asset.prompt }
       const identity = { version: 1, source: startSignature, expected, duration, input_mode, samples: media.sample_times_ms,
-        instructions: body.instructions, model: creativeModelIdentity(model.id) }
+        instructions: body.instructions, model: creativeModelIdentity(model.id),
+        ...(body.text_generation_options?.reasoning ? { reasoning: body.text_generation_options.reasoning } : {}) }
       const store = generationUnitStore(id, `video-review:${assetId}:${shot?.id || 'asset'}`, identity)
-      const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, savePrivateResponse: store.savePrivateResponse, signal: controller.signal })
-      const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => generate(model, provider, { prompt, structured_output: contract,
-        ...('video' in media ? { video: media.video } : { images: media.images }) }, controller.signal)
+      if (body.resume_review_id && (body.resume_review_id !== `partial-${creativeInputHash(identity)}` || !store.checkpoint.steps.report)) {
+        fail('复核资料或模型配置已变化，无法继续原复核。', 409)
+      }
+      const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, savePrivateResponse: store.savePrivateResponse, signal })
+      const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => withReasoning(() => generate(model, provider, { prompt, structured_output: contract,
+        ...('video' in media ? { video: media.video } : { images: media.images }) }, signal))
       const validate = (value: ReviewResult) => {
         validateVideoReview(value, duration)
         if (!native && value.findings.some(finding => finding.evidence_times_ms.some(time => !media.sample_times_ms.includes(time)))) fail('抽帧复核的证据时间必须选择实际提供的 sample_times_ms，不能编造未提供的画面')
       }
       const prompt = videoReviewInstructions(expected, input_mode, media.sample_times_ms, duration, body.instructions)
       const result = await steps.run('report', '复核视频画面', identity, () => generateStructuredOutput('video_review', resultSchema,
-        requestModel, prompt, { signal: controller.signal, validate }), raw => { const value = resultSchema.parse(raw); validate(value); return value })
+        requestModel, prompt, { signal, validate }), raw => { const value = resultSchema.parse(raw); validate(value); return value })
+      let pagination: Extract<VideoReviewResult, { pagination: unknown }>['pagination'] | undefined
       // Reaching one page's limit does not prove all findings were returned.
       // Keep complete pages and require an explicit end marker. A repeated page
       // is no progress and cannot silently become an exhaustive report.
@@ -180,14 +192,30 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
             if (value.has_more && !value.findings.some(finding => !seen.has(creativeInputHash(finding)))) fail('复核分页没有新增问题，已保留现有结果，请缩小范围后继续')
             return value
           }
-          const next = await steps.run(`findings:${page}`, `补充复核问题第${page + 1}页`, { identity, accepted },
-            () => generateStructuredOutput('video_review_page', pageSchema, requestModel, prompt
-              + '\n【问题接续页】不要重复已保存问题，仅返回尚未返回的具体问题；本页最多20条。has_more明确说明是否还有未返回问题。没有更多时返回空findings、has_more=false。'
-              + '\n已保存问题：' + JSON.stringify(accepted), { signal: controller.signal, validate: validatePage }), validatePage)
+          const pageId = `findings:${page}`
+          let next: z.infer<typeof pageSchema>
+          try {
+            next = await steps.run(pageId, `补充复核问题第${page + 1}页`, { identity, accepted },
+              () => generateStructuredOutput('video_review_page', pageSchema, requestModel, prompt
+                + '\n【问题接续页】不要重复已保存问题，仅返回尚未返回的具体问题；本页最多20条。has_more明确说明是否还有未返回问题。没有更多时返回空findings、has_more=false。'
+                + '\n已保存问题：' + JSON.stringify(accepted), { signal, validate: validatePage, retryTransport: false }), validatePage)
+          } catch (error) {
+            controller.signal.throwIfAborted()
+            const failureCode = (error as { code?: string } | undefined)?.code
+            const pending = Object.entries(steps.checkpoint.steps).some(([key, entry]) => {
+              if (!key.startsWith(`response:${pageId}:`)) return false
+              const value = entry.value as { initial_started?: unknown; correction_started?: unknown; correction?: unknown } | undefined
+              return !!(value?.initial_started || value?.correction_started && !value.correction)
+            })
+            const state = pending || failureCode === 'structured_initial_delivery_pending' ? 'delivery_pending'
+              : deadline.signal.aborted || error instanceof TextProviderError && error.retryable ? 'resumable' : 'needs_attention'
+            pagination = { state, completed_pages: page }
+            break
+          }
           for (const finding of next.findings) if (!seen.has(creativeInputHash(finding))) { seen.add(creativeInputHash(finding)); result.findings.push(finding) }
           if (!next.has_more) { complete = true; break }
         }
-        if (!complete) fail('复核问题尚未全部返回，已保存完整问题页；请缩小复核范围后重试', 422)
+        if (!complete) pagination ??= { state: 'needs_attention', completed_pages: 11 }
       }
       controller.signal.throwIfAborted()
       const currentAsset = projectVideo(id, assetId), currentShot = associatedShot(id, currentAsset, body.shot_id)
@@ -206,13 +234,18 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
         ...(native ? ['视频已提交给模型，提供商可能内部采样，不能保证逐帧检查。']
           : ['本次依据带时间标签的离散抽帧，连续运动速度、滑步和接触瞬间仍需播放确认。'])])]
       const evidenceTimes = [...new Set(result.findings.flatMap(finding => finding.evidence_times_ms))].sort((a, b) => a - b).slice(0, 24)
-      const reportId = newId()
+      const reportId = pagination ? `partial-${creativeInputHash(identity)}` : newId()
       const report: VideoReviewReport = { id: reportId, project_id: id, asset_id: assetId, shot_id: shot?.id || null,
         model_id: model.id, model_name: model.name, created_at: now(), input_mode, duration_ms: duration,
         target_duration_ms: shot ? Math.round(shot.duration * 1000) : null, stale: false, ...result,
         findings: result.findings.map(finding => ({ id: newId(), ...finding })), limitations,
         sample_times_ms: media.sample_times_ms, evidence_frames: evidenceTimes.map(time_ms => ({ time_ms,
-          url: `/api/projects/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetId)}/video-review-frame?time_ms=${time_ms}&review_id=${encodeURIComponent(reportId)}` })) }
+          url: `/api/projects/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetId)}/video-review-frame?time_ms=${time_ms}${pagination ? '' : `&review_id=${encodeURIComponent(reportId)}`}` })) }
+      if (pagination) {
+        reportModelResult({ stage: 'continuity_review', phase: 'quality', status: 'inconclusive', issue_count: report.findings.length })
+        const preview: VideoReviewResult = { ...report, verdict: 'uncertain', usable_ranges: [], pagination }
+        return preview
+      }
       const inputContext = JSON.stringify({ version: 1, expected, instructions: body.instructions, input_mode,
         sample_times_ms: media.sample_times_ms, model: { id: model.id, remote_id: model.remote_id, protocol: model.protocol,
           supports_video: settings.supports_video === true, supports_vision: settings.supports_vision === true } })
@@ -222,6 +255,7 @@ export function registerVideoReviewRoutes(app: FastifyInstance, dependencies: De
       return report
     } catch (error) {
       if (controller.signal.aborted) throw Object.assign(new Error(controller.signal.reason instanceof Error ? controller.signal.reason.message : '成片复核已取消'), { statusCode: 499 })
+      if (deadline.signal.aborted) fail('成片复核超时，尚未得到完整的首页结果。', 504)
       if (error && typeof error === 'object' && 'statusCode' in error) throw error
       throw Object.assign(new Error(`成片复核失败：${error instanceof Error ? error.message : String(error)}`), { statusCode: 502 })
     } finally {

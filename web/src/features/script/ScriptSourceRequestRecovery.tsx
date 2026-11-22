@@ -6,6 +6,8 @@ import { api, json, type ApiError } from '../../shared/api/api'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { SourceAnalysisField, SourceAnalysisIdentifier } from './SourceAnalysisDetailFields'
 
+import './script-source-recovery-dialog.css'
+
 export type SourceRequestRecovery = {
   analysis_id: string; source_updated_at: string; cas_token: string; local_active: boolean; model_id?: string
   budget: { can_resume: boolean; grants: number; max_grants: number; exhausted?: string }
@@ -278,34 +280,36 @@ export default function ScriptSourceRequestRecovery({ source, selectedModelId, o
   }
 
   return <Modal opened={opened && (!!risk || !!legacy)} onClose={() => { if (!lock.current) callbacks.current.onClose() }} title={remainingUsage ? '确认剩余分析用量' : '确认恢复未完成的分析'} centered size="lg" zIndex={310}
-    closeOnClickOutside={!submitting} closeOnEscape={!submitting} withCloseButton={!submitting}>
-    {(risk || legacy) && details && <div className="sd-source-recovery">
-      <p className="sd-source-recovery-intro">{progress!.message}</p>
-      <p className="sd-source-recovery-risk">{risk?.warning || legacy?.warning}{!remainingUsage && ' 旧请求的最终状态仍未知，确认不会取消旧请求，也不会将其记为未发送。'}</p>
-      <p className="sd-source-recovery-risk">{extraction ? '本次仅处理未完成的原稿分析；已保存结果会复用，不进行质量审核、修补或复核循环。未知请求历史继续保留，不会自动认定远端取消。' : remainingUsage ? '已完成的本地修补会保留。本次仅为剩余修补和复核建立新的授权，沿用原累计用量上限；再次断连或没有进展时停止。'
-        : risk ? '本次确认覆盖剩余修补和复核流程；系统会自动复用已保存结果，在限定用量内继续，断连后停止，不再自动重发。'
-        : '本次沿用当前未完成请求的恢复范围和原有累计用量限制；不会重置额度，已保存结果会继续保留。'}</p>
-      <dl className="sd-analysis-fields">
-        <SourceAnalysisField label="恢复范围">{risk ? `${risk.scope.repair_count} 项修补、${risk.scope.review_count} 轮复核，最多 ${risk.scope.max_model_requests} 次模型请求`
-          : `继续当前未完成请求；累计剩余最多 ${legacy!.max_model_requests} 次模型请求`}</SourceAnalysisField>
-      </dl>
-      <WorkspaceDisclosure label="本次恢复详情" className="sd-source-recovery-details">
-        <SourceAnalysisIdentifier label="分析编号" value={details.analysis_id} />
-        <SourceAnalysisIdentifier label="原稿版本" value={details.source_updated_at} />
-        <SourceAnalysisIdentifier label="恢复范围标识" value={risk?.scope_token || legacy!.workflow_id} />
-        {details.blockers.map(item => <section key={item.id}>
-          {item.local_request_id && <SourceAnalysisIdentifier label="本地请求编号" value={item.local_request_id} />}
-          {item.upstream_request_id && <SourceAnalysisIdentifier label="上游请求编号" value={item.upstream_request_id} />}
-          <SourceAnalysisIdentifier label="请求指纹" value={item.request_key} />
-        </section>)}
-      </WorkspaceDisclosure>
-      {error && <Alert color="red" mt="sm" role="alert">{error}{uncertain && <p>提交结果尚未确认，重试会沿用同一恢复操作编号。</p>}</Alert>}
-      <div className="sd-source-dialog-actions">
+    closeOnClickOutside={!submitting} closeOnEscape={!submitting} withCloseButton={!submitting} className="sd-source-recovery-modal">
+    {(risk || legacy) && details && <>
+      <div className="sd-source-recovery-scroll"><div className="sd-source-recovery">
+        <p className="sd-source-recovery-intro">{progress!.message}</p>
+        <p className="sd-source-recovery-risk">{risk?.warning || legacy?.warning}{!remainingUsage && ' 旧请求的最终状态仍未知，确认不会取消旧请求，也不会将其记为未发送。'}</p>
+        <p className="sd-source-recovery-risk">{extraction ? '本次仅处理未完成的原稿分析；已保存结果会复用，不进行质量审核、修补或复核循环。未知请求历史继续保留，不会自动认定远端取消。' : remainingUsage ? '已完成的本地修补会保留。本次仅为剩余修补和复核建立新的授权，沿用原累计用量上限；再次断连或没有进展时停止。'
+          : risk ? '本次确认覆盖剩余修补和复核流程；系统会自动复用已保存结果，在限定用量内继续，断连后停止，不再自动重发。'
+          : '本次沿用当前未完成请求的恢复范围和原有累计用量限制；不会重置额度，已保存结果会继续保留。'}</p>
+        <dl className="sd-analysis-fields">
+          <SourceAnalysisField label="恢复范围">{risk ? `${risk.scope.repair_count} 项修补、${risk.scope.review_count} 轮复核，最多 ${risk.scope.max_model_requests} 次模型请求`
+            : `继续当前未完成请求；累计剩余最多 ${legacy!.max_model_requests} 次模型请求`}</SourceAnalysisField>
+        </dl>
+        <WorkspaceDisclosure label="本次恢复详情" className="sd-source-recovery-details">
+          <SourceAnalysisIdentifier label="分析编号" value={details.analysis_id} />
+          <SourceAnalysisIdentifier label="原稿版本" value={details.source_updated_at} />
+          <SourceAnalysisIdentifier label="恢复范围标识" value={risk?.scope_token || legacy!.workflow_id} />
+          {details.blockers.map(item => <section key={item.id}>
+            {item.local_request_id && <SourceAnalysisIdentifier label="本地请求编号" value={item.local_request_id} />}
+            {item.upstream_request_id && <SourceAnalysisIdentifier label="上游请求编号" value={item.upstream_request_id} />}
+            <SourceAnalysisIdentifier label="请求指纹" value={item.request_key} />
+          </section>)}
+        </WorkspaceDisclosure>
+        {error && <Alert color="red" mt="sm" role="alert">{error}{uncertain && <p>提交结果尚未确认，重试会沿用同一恢复操作编号。</p>}</Alert>}
+      </div></div>
+      <footer className="sd-source-dialog-actions">
         <Button variant="default" disabled={submitting} onClick={() => callbacks.current.onClose()}>取消</Button>
         <Button color="orange" loading={submitting} disabled={submitting || unavailable} onClick={() => void (legacy ? resumeLegacy(legacy) : recover(details, risk))}>
           {uncertain ? '重试同一恢复' : remainingUsage ? '确认新用量并恢复' : '确认可能重复计费并恢复'}
         </Button>
-      </div>
-    </div>}
+      </footer>
+    </>}
   </Modal>
 }

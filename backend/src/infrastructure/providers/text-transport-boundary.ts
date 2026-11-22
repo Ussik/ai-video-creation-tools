@@ -1,6 +1,10 @@
 import { TextProviderError } from './text-errors.js'
+import { isSourceAnalysisContract } from '../../modules/generation/source-analysis-contracts.js'
 
 export const textHeadersTimeoutMs = 2 * 60_000
+const sourceAnalysisHeadersTimeoutMs = 10 * 60_000
+export const standardTextHeadersTimeoutMs = (contractName?: string) =>
+  isSourceAnalysisContract(contractName) ? sourceAnalysisHeadersTimeoutMs : textHeadersTimeoutMs
 export const textErrorBodyByteLimit = 64 * 1024
 export type TextTransportScope = { signal: AbortSignal; wait<T>(work: Promise<T>): Promise<T> }
 

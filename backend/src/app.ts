@@ -46,6 +46,7 @@ import { modelStepSignal, modelAttemptNumber, withUnrestrictedScriptExecution } 
 import { TextProviderError } from './infrastructure/providers/text-errors.js'
 import { isTextRequestBudgetError, type ScriptRequestUsage } from './infrastructure/providers/text-request-usage.js'
 import { supportsScriptReviewPolicy } from './infrastructure/providers/text-script-review-policy.js'
+import { bindTaskReasoning, bindTaskReasoningById, textGenerationOptionsInput } from './infrastructure/providers/task-reasoning.js'
 import { assetPromptResult, assetPromptInstructions } from './modules/assets/asset-prompt.js'
 import { imageReferenceConfigError } from '@video-studio/shared/media/image-reference-config'
 import { videoRatioOptions, videoResolutionOptions } from '@video-studio/shared/media/video-parameters'
@@ -96,6 +97,9 @@ import { commitScriptSourceUpdate, scriptDocumentVersion, scriptSourceUpdateSche
 import type { ScriptSourceDocument, ScriptSourceUpdate } from '@video-studio/shared/script/script-source-document'
 import { ScriptToolProblem } from './modules/script/script-revision.js'
 import { scriptSettingsSchema, scriptIntentSchema, scriptIntentPrompt, parseScriptIntent, mergeConfirmedScriptSettings } from './modules/script/script-intent.js'
+import { conversationModeManager, hasExplicitExecutionTrigger, hasPlanningSignal, type ConversationMode } from './modules/script/script-conversation-mode.js'
+import { compressConversationHistory, buildCompressedMessages } from './modules/script/script-conversation-compression.js'
+import { compressScriptSourceIndex } from './modules/script/script-source-compression.js'
 import { syncIntentVisualStyle } from './modules/script/script-intent-visual-style.js'
 import { directorModes, directorModeInstructions } from '@video-studio/shared/script/script-creation-mode'
 import { themeVisualInput, modelVisuals, themeVisualPrompt, parseThemeVisuals } from './modules/script/script-theme-visuals.js'
@@ -210,6 +214,7 @@ const scriptArtifactPatch = scriptArtifactInput.omit({ id: true, artifact_type: 
   status: scriptArtifactInput.shape.status.unwrap(),
 }).partial().strict()
 const scriptArtifactGenerationInput = z.object({
+  text_generation_options: textGenerationOptionsInput,
   restart: z.boolean().optional(),
   skill_selections: skillSelectionsInput.optional(),
   model_id: z.string().min(1), artifact_type: scriptArtifactType,
@@ -246,6 +251,7 @@ const scriptConversationInput = z.object({
   messages: z.array(scriptConversationMessage).max(80).default([]),
 }).strict()
 const scriptGenerationInput = z.object({
+  text_generation_options: textGenerationOptionsInput,
   restart: z.boolean().optional(),
   skill_selections: skillSelectionsInput.optional(),
   model_id: z.string().min(1), idea: z.string().max(20000).optional(),
@@ -257,6 +263,7 @@ const scriptGenerationInput = z.object({
   reference_documents: referenceDocuments.optional(),
 })
 const scriptDirectorChatInput = z.object({
+  text_generation_options: textGenerationOptionsInput,
   draft_resolution: draftResolutionInput.optional(),
   task: z.object({ id: z.string().min(1).max(120), conversation: scriptConversationInput.safeExtend({ id: z.string().min(1).max(120) }), execution: scriptExecutionSchema }).strict().optional(),
   skill_selections: skillSelectionsInput.optional(),
@@ -345,12 +352,13 @@ const workflowCommitInput = workflowDraftInput.safeExtend({
 }).transform(normalizeWorkflowRequest)
 const sceneConversionInput = z.object({ scene_ids: z.array(z.string().min(1)).min(1).max(100) })
 const shotPlanningInput = z.object({
+  text_generation_options: textGenerationOptionsInput,
   skill_selections: skillSelectionsInput.optional(),
   model_id: z.string().min(1), scene_ids: z.array(z.string().min(1)).min(1).max(10),
   shots_per_scene: z.number().int().min(2).max(5).default(3),
   prompt_override: z.string().trim().min(1).max(500000).optional(),
 })
-const shotPlanningPromptInput = shotPlanningInput.omit({ model_id: true, prompt_override: true })
+const shotPlanningPromptInput = shotPlanningInput.omit({ model_id: true, prompt_override: true, text_generation_options: true })
 const plannedShot = z.object({
   title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(10000),
@@ -373,6 +381,7 @@ const videoReferenceUsageInput = z.array(z.object({ asset_id: z.string().min(1).
 const promptReferenceOverridesInput = z.record(z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).nullable())
   .refine(value => Object.keys(value).length <= 100, '参考图片调整不能超过 100 项')
 const generationInput = z.object({
+  text_generation_options: textGenerationOptionsInput,
   // Image assets created from the script director are project-level and do
   // not belong to a shot yet. Video generation still requires a shot in the
   // route below; keeping the field nullable lets both flows use the same
@@ -1188,6 +1197,16 @@ function validateRevisionContinuation(project: Project, data: DirectorInput): vo
 
 function resolveCreationAction(project: Project, data: DirectorInput): DirectorInput {
   validateRevisionContinuation(project, data)
+  if (data.draft_resolution) {
+    const pending = pendingScriptDraft(project.id)
+    if (pending?.id === data.draft_resolution.id && pending.version === data.draft_resolution.version) {
+      const original = scriptDirectorChatInput.parse(pending.request)
+      if (pending.reasoning_model_signature && pending.reasoning_model_signature !== creativeModelIdentity(original.model_id)) {
+        throw Object.assign(new Error('候选稿的原文本模型配置已变化，无法沿用原推理设置继续。'), { statusCode: 409 })
+      }
+      return { ...data, model_id: original.model_id, text_generation_options: original.text_generation_options }
+    }
+  }
   if (!data.next_step_id) return data
   const step = acceptCreationStep(project.id, projectScript(project.id), data.next_step_id)
   if (data.workflow && (data.workflow.stage !== step.stage || data.workflow.episode_number !== step.episode_number)) invalid('下一步操作与指定阶段不一致')
@@ -1468,18 +1487,69 @@ async function resolveDirectorIntent(project: Project, data: DirectorInput, mode
   }
   const script = projectScript(project.id)
   const styleVersion = projectVisualStyle(project.id).version
+
+  // ===== Conversation Mode Detection =====
+  // Detect conversation mode based on user message and context
+  const lastUserMessage = data.messages.filter(m => m.role === 'user').slice(-1)[0]?.text || ''
+  const triggerContext = {
+    explicit_workflow: data.workflow,
+    pending_plan: data.intent_context?.discussion,
+  }
+  const hasExecutionTrigger = hasExplicitExecutionTrigger(lastUserMessage, triggerContext)
+  const hasPlanTrigger = hasPlanningSignal(lastUserMessage)
+
+  // Determine conversation mode for response
+  const conversationMode: ConversationMode = hasExecutionTrigger
+    ? conversationModeManager.getDefaultMode() // Will be execution after intent recognition
+    : conversationModeManager.getDefaultMode() // Default to discussion
+
+  // Context window optimization: conversation compression + script source compression
+  const isPropsStage = (data.workflow as any)?.stage === 'props'
+  const isLocationsStage = (data.workflow as any)?.stage === 'locations'
+  const shouldIncludeSourceIndex = data.focus_artifact === 'all'
+
+  // Step 1: Compress conversation history (industry best practice)
+  // Compresses old messages to summary while keeping recent messages intact
+  const compressedConversation = compressConversationHistory(data.messages, 15)
+  const compressedMessages = buildCompressedMessages(compressedConversation)
+
+  // Step 2: Compress script source index for later stages
+  // Reduces from ~40K tokens to ~2K tokens while preserving key information
+  let uploadedScript = null
+  if (shouldIncludeSourceIndex) {
+    const sourceIndexRaw = scriptSourceIndex(project.id, true, false)
+    // Only use full version for early stages (outline, characters)
+    // All other cases (locations, props, or uncertain intent recognition) use compressed version
+    const isEarlyStage = (data.workflow as any)?.stage === 'outline' || (data.workflow as any)?.stage === 'characters'
+    if (isEarlyStage) {
+      uploadedScript = sourceIndexRaw
+    } else {
+      // Compress for all other stages to avoid context window exceeded
+      uploadedScript = compressScriptSourceIndex(sourceIndexRaw)
+    }
+  }
+
   const prompt = scriptIntentPrompt({
-    uploaded_script: data.focus_artifact === 'all' ? scriptSourceIndex(project.id, true, false) : null,
-    source_fallback: data.focus_artifact === 'all' ? scriptSourceFallbackContext(project.id, true) : '',
+    uploaded_script: uploadedScript,
+    source_fallback: shouldIncludeSourceIndex ? scriptSourceFallbackContext(project.id, true) : '',
     project: { name: project.name, brief: project.brief, ratio: project.ratio },
     saved_settings: script.generation_options, current_settings: data.generation_options,
-    documents: (script.artifacts || []).map(item => ({ type: item.artifact_type,
-      episode_number: item.episode_number, title: item.title, status: item.status, summary: item.content.slice(0, 800) })),
+    documents: (script.artifacts || [])
+      .filter(item => {
+        // Context window optimization: props stage only needs character and location info
+        // Reduces input by ~2,500 tokens (11 documents × ~800 chars)
+        if (isPropsStage) {
+          return ['characters', 'relationships', 'locations', 'location_layouts'].includes(item.artifact_type)
+        }
+        // Other stages receive all documents
+        return true
+      })
+      .map(item => ({ type: item.artifact_type,
+        episode_number: item.episode_number, title: item.title, status: item.status, summary: item.content.slice(0, 800) })),
     workflow_progress: workflowProgress(script), workflow_guidance: workflowGuidance(script),
     stage_context: conversationStageContext(project, data),
     state: data.intent_context || {}, mode: data.mode,
-    messages: data.messages.map(({ role, text, reference_documents }, index) => ({ index, role, text,
-      reference_documents: reference_documents?.map(({ content: _content, ...metadata }) => metadata) })),
+    messages: compressedMessages.map(({ role, text }, index) => ({ index, role, text })),
   })
   const raw = JSON.stringify(await generateStructuredOutput('script_intent', scriptIntentSchema,
     (text, contract) => streamText(model, provider, { prompt: text, structured_output: contract }, item => decryptKey(item.key_ciphertext || null), () => {}, signal), prompt, {
@@ -1490,7 +1560,27 @@ async function resolveDirectorIntent(project: Project, data: DirectorInput, mode
   const syncedStyle = await syncIntentVisualStyle({ project, script: () => projectScript(project.id), messages: data.messages,
     intent, expectedVersion: styleVersion, activity, onEvent, signal, beforeSave: styleSync?.beforeSave, onSaved: styleSync?.onSaved })
   const next = { ...data, generation_options: mergeConfirmedScriptSettings(projectScript(project.id).generation_options, data.generation_options, intent.settings_patch, true) }
-  const resolved = { data: next, ...(syncedStyle?.changed ? { settingsChanged: true } : {}) }
+
+  // Determine conversation mode based on intent action
+  const currentConversationMode: ConversationMode = intent.action === 'draft'
+    ? {
+        current: 'execution',
+        entered_at: new Date().toISOString(),
+        config: { enable_intent_recognition: true, provide_suggestions: false, require_confirmation: true, allow_auto_switch: false },
+        hints: { status: '⚙️ 生成模式', description: '正在生成内容...', available_actions: ['返回讨论'] },
+      }
+    : {
+        current: 'discussion',
+        entered_at: new Date().toISOString(),
+        config: { enable_intent_recognition: false, provide_suggestions: true, require_confirmation: false, allow_auto_switch: false },
+        hints: { status: '💬 讨论模式', description: '自由讨论中，随时说出你的想法', available_actions: ['切换到规划模式', '直接开始生成'] },
+      }
+
+  const resolved = {
+    data: next,
+    conversation_mode: currentConversationMode,
+    ...(syncedStyle?.changed ? { settingsChanged: true } : {}),
+  }
   if (syncedStyle) onEvent({ type: 'intent', generation_options: next.generation_options, stage_context: conversationStageContext(project, next) })
   if (intent.action === 'clarify') return { ...resolved, reply: intent.reply }
   if (intent.action === 'discuss') {
@@ -1615,6 +1705,7 @@ function directorRecoveryKey(project: Project, model: Model, provider: Provider,
   const selectedStages = (Object.keys(data.skill_selections || {}) as SkillStage[])
     .filter(stage => stage !== 'script' && data.skill_selections?.[stage] !== undefined).sort()
   return createHash('sha256').update(JSON.stringify({ version: 2, source: resolutionSourceVersion(project),
+    ...(data.text_generation_options?.reasoning ? { reasoning: data.text_generation_options.reasoning } : {}),
     task: { ...directorSkillTask(data, 'script'), document_action: data.document_action,
       workflow: data.workflow && !legacyWorkflowOrder ? workflowRequest.parse(data.workflow) : data.workflow },
     pending: pendingScriptDraft(project.id)?.version, preview: getToolDraft(project.id)?.version,
@@ -1902,6 +1993,7 @@ async function executeDirectorChat(project: Project, data: DirectorInput, model:
     if (resolutionSourceVersion(project) !== sourceVersion) throw Object.assign(new Error('项目资料或原剧本已变化，请重新生成；已有文档未修改'), { statusCode: 409 })
     const { task: _task, ...request } = data
     const pending = retainScriptDraft(project.id, { draft: error.draft, findings: error.findings,
+      reasoning_model_signature: creativeModelIdentity(model.id),
       request: { ...request, ...(styleSaved ? { generation_options: mergeConfirmedScriptSettings(projectScript(project.id).generation_options, data.generation_options) } : {}),
         workflow: resolutionWorkflow(error.draft) }, source_version: sourceVersion })
     clearGenerationCheckpoint(project.id, { keepReview: true })
@@ -2631,13 +2723,15 @@ async function processObservedJob(job: Job, token?: string): Promise<void> {
       if (provider.adapter === 'demo' || provider.archived || model.archived || !provider.enabled || !model.enabled) throw new Error('模型或提供商已停用')
       prepareGenerationExecution(job, model, provider)
       const references = validExternalTaskId(job.external_id) ? [] : (request.reference_asset_ids as string[] || []).map(id => required<Asset>('assets', id))
-      const result = await generate(model, provider, { ...request, prompt: String(request.prompt), _external_id: job.external_id }, references, job.project_id,
+      const selection = textGenerationOptionsInput.parse(request.text_generation_options)
+      const withReasoning = bindTaskReasoningById(model.id, selection)
+      const result = await withReasoning(() => generate(model, provider, { ...request, prompt: String(request.prompt), _external_id: job.external_id }, references, job.project_id,
         id => { if (token) assertMediaJobOwner(job, token); run('UPDATE jobs SET external_id=?, updated_at=? WHERE id=?', id, now(), job.id) },
         item => decryptKey(item.key_ciphertext || null),
         url => { if (token) assertMediaJobOwner(job, token); run(`INSERT INTO job_image_recovery (job_id, result_url_ciphertext, created_at) VALUES (?, ?, ?)
           ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()) },
         url => { if (token) assertMediaJobOwner(job, token); run(`INSERT INTO job_video_recovery (job_id, result_url_ciphertext, created_at) VALUES (?, ?, ?)
-          ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()) })
+          ON CONFLICT(job_id) DO UPDATE SET result_url_ciphertext=excluded.result_url_ciphertext`, job.id, encryptKey(url), now()) }))
       return { ...result, kind: model.modality }
     }
     let result
@@ -2763,6 +2857,7 @@ export function buildApp(): FastifyInstance {
     send: (event: Record<string, unknown>) => void, signal: AbortSignal, activity = activityRecorder(send), onStyleSaved?: () => void,
     onRepairRequestAdvanced?: (request: DirectorInput) => void, restoredActivities: ScriptActivity[] = [],
     executionOptions: { explicitResume?: boolean; durableTask?: boolean; generationAttemptId?: string; resumeCheckpoint?: boolean } = {}) => {
+    const withReasoning = bindTaskReasoning(model, provider, data.text_generation_options)
     const generationAttemptId = executionOptions.generationAttemptId || newId()
     const resumeCheckpoint = executionOptions.resumeCheckpoint === true || executionOptions.explicitResume === true || data.draft_resolution?.strategy === 'continue'
     const pending = pendingScriptDraft(project.id)
@@ -2776,7 +2871,7 @@ export function buildApp(): FastifyInstance {
     if (executionOptions.explicitResume || data.draft_resolution?.strategy === 'continue') directorSourceResumes.set(activity, new Set())
     try {
       const observe = <T>(work: () => Promise<T>) => currentModelRequestContext()?.taskId ? work() : observeModelTask({ projectId: project.id, modelId: model.id, label: '剧本创作', owner: 'director', signal, policy: modelTaskPolicies.generation }, work)
-      const result = await observe(() => runDirectorExecutionBudget({ projectId: project.id,
+      const result = await withReasoning(() => observe(() => runDirectorExecutionBudget({ projectId: project.id,
         identity: { source: resolutionSourceVersion(project), request: data, model: creativeModelIdentity(model.id),
           pending: pending && { id: pending.id, version: pending.version }, preview: getToolDraft(project.id)?.version },
         ...budgetScale,
@@ -2786,7 +2881,7 @@ export function buildApp(): FastifyInstance {
         // full manuscript directly; design review prepares analysis if needed.
         return executeDirectorChat(project, data, model, provider, send, budgetSignal, activity, onStyleSaved, onRepairRequestAdvanced,
           generationAttemptId, resumeCheckpoint)
-      }))))
+      })))))
       activity.finish(entry, 'succeeded', { usage: tracker.snapshot(directorUsageStates.get(activity)?.cumulative) })
       return { ...result, activity: activity.entries }
     } catch (error) {
@@ -3113,7 +3208,7 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     const canvasId = finalCutCanvasId(request.query)
     resolveFinalCutScope(id, canvasId)
-    const data = parse(z.object({ model_id: z.string().min(1) }).strict(), request.body)
+    const data = parse(z.object({ model_id: z.string().min(1), text_generation_options: textGenerationOptionsInput }).strict(), request.body)
     const model = required<Model>('models', data.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
     checkProtocol(model.modality, model.protocol)
@@ -3121,7 +3216,9 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     const snapshot = semanticContinuityContext(id, canvasId)
-    const identity = { version:1, signature:snapshot.signature, model:creativeModelIdentity(model.id) }
+    const withReasoning = bindTaskReasoning(model, provider, data.text_generation_options)
+    const identity = { version:1, signature:snapshot.signature, model:creativeModelIdentity(model.id),
+      ...(data.text_generation_options?.reasoning ? { reasoning: data.text_generation_options.reasoning } : {}) }
     const store = generationUnitStore(id, `continuity:${canvasId || 'project'}`, identity)
     const pairs = snapshot.context.pairs
     const groups = pairs.length <= 4 ? [pairs] : Array.from({length:Math.ceil(pairs.length/4)},(_,index)=>pairs.slice(index*4,index*4+4))
@@ -3130,8 +3227,8 @@ export function buildApp(): FastifyInstance {
       label:index=>`相邻镜头检查 ${Number(index)+1}/${groups.length}`,
       generate:async index=>{
         const selected=groups[Number(index)]!
-        return parseSemanticContinuity(JSON.stringify(await structuredTextOutput('continuity_report',semanticContinuitySchema,model,provider,
-          semanticContinuityPrompt({...snapshot.context,pairs:selected}),value=>{parseSemanticContinuity(JSON.stringify(value),selected)})),selected)
+        return parseSemanticContinuity(JSON.stringify(await withReasoning(() => structuredTextOutput('continuity_report',semanticContinuitySchema,model,provider,
+          semanticContinuityPrompt({...snapshot.context,pairs:selected}),value=>{parseSemanticContinuity(JSON.stringify(value),selected)}))),selected)
       }, validate:(value,index)=>parseSemanticContinuity(JSON.stringify({issues:(value as ReturnType<typeof parseSemanticContinuity>).map(({severity:_severity,field:_field,...issue})=>issue)}),groups[Number(index)]!)
     })) : new Map<string,ReturnType<typeof parseSemanticContinuity>>()
     const issues=[...reports.values()].flat()
@@ -3540,18 +3637,19 @@ export function buildApp(): FastifyInstance {
   })
   app.post('/api/projects/:id/script/director/asset-prompt', { bodyLimit: 3 * 1024 * 1024 }, async request => {
     const { id } = parse(idParams, request.params), project = required<Project>('projects', id)
-    const data = z.object({ model_id: z.string().min(1), focus_artifact: assetTaskFocus,
+    const data = z.object({ model_id: z.string().min(1), text_generation_options: textGenerationOptionsInput, focus_artifact: assetTaskFocus,
       messages: z.array(directorMessageText).max(32), generation_options: scriptGenerationOptions.default({}), skill_selections: skillSelectionsInput.optional(),
     }).strict().parse(request.body)
+    const withReasoning = bindTaskReasoningById(data.model_id, data.text_generation_options)
     const script = projectScript(id)
     const base = assetPromptInstructions(data.focus_artifact, {
       project: { name: project.name, brief: project.brief }, script, settings: data.generation_options, messages: data.messages, project_visual_style: projectVisualStyle(id),
     })
-    const rules = await creativeRules('visual_assets', id, data.model_id, base, data.skill_selections,
-      { text: data.messages.filter(message => message.role === 'user').at(-1)?.text || '', focus: data.focus_artifact, purpose: 'create' })
+    const rules = await withReasoning(() => creativeRules('visual_assets', id, data.model_id, base, data.skill_selections,
+      { text: data.messages.filter(message => message.role === 'user').at(-1)?.text || '', focus: data.focus_artifact, purpose: 'create' }))
     const prompt = applySkillRules(base, rules)
     const result = await generateStructuredOutput('asset_prompt', assetPromptResult,
-      (text, contract) => creativeText(id, data.model_id, text, contract), prompt + '\n' + projectStyleInstructions(projectVisualStyle(id)))
+      (text, contract) => withReasoning(() => creativeText(id, data.model_id, text, contract)), prompt + '\n' + projectStyleInstructions(projectVisualStyle(id)))
     return { ...result, prompt_zh: withProjectStyle(result.prompt_zh, projectVisualStyle(id)), prompt_en: withProjectStyle(result.prompt_en, projectVisualStyle(id)), skill_assignment: rules.assignment }
   })
   app.post('/api/projects/:id/asset-tasks', async request => {
@@ -3742,6 +3840,7 @@ export function buildApp(): FastifyInstance {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
     const data = parse(themeVisualInput, request.body)
+    const withReasoning = bindTaskReasoningById(data.model_id, data.text_generation_options)
     // An exact catalog identity is metadata, not a semantic inference.
     if ((!data.genre || isScriptThemeCategory(data.genre)) && (!data.genre_fusion || isScriptThemeCategory(data.genre_fusion))) {
       return { primary: data.genre || null, fusion: data.genre_fusion || null }
@@ -3754,13 +3853,15 @@ export function buildApp(): FastifyInstance {
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
     // A read-only, isolated classification; it never patches generation options
     // or advances the director's conversation/workflow.
-    return parseThemeVisuals(JSON.stringify(await structuredTextOutput('theme_visuals', modelVisuals, model, provider, themeVisualPrompt(data))), data)
+    const result = await withReasoning(() => structuredTextOutput('theme_visuals', modelVisuals, model, provider, themeVisualPrompt(data)))
+    return parseThemeVisuals(JSON.stringify(result), data)
   })
   app.post('/api/projects/:id/script/replies/classify', async request => {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
     const data = parse(z.object({
       model_id: z.string().min(1),
+      text_generation_options: textGenerationOptionsInput,
       force: z.boolean().optional(),
       stage_controlled: z.boolean().optional(),
       messages: z.array(z.object({
@@ -3778,6 +3879,7 @@ export function buildApp(): FastifyInstance {
     const provider = required<Provider>('providers', model.provider_id)
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用')
+    const withReasoning = bindTaskReasoning(model, provider, data.text_generation_options)
     const results: Array<{ id: string; classification: z.infer<typeof replyClassification> }> = []
     const missing = data.messages.filter(message => {
       const cached = data.force ? null : cachedReplyClassification(id, message)
@@ -3787,9 +3889,9 @@ export function buildApp(): FastifyInstance {
     })
     if (missing.length) {
       const sourceIds = missing.map(item => item.id)
-      const classified = await structuredTextOutput('reply_classification', classificationResult, model, provider,
+      const classified = await withReasoning(() => structuredTextOutput('reply_classification', classificationResult, model, provider,
         replyClassificationPrompt(missing.map(source => ({ ...source, stage_context: source.stage_context || directorStageContext(projectScript(id)) }))),
-        value => { parseReplyClassifications(JSON.stringify(value), sourceIds, data.stage_controlled) })
+        value => { parseReplyClassifications(JSON.stringify(value), sourceIds, data.stage_controlled) }))
       const analyzed = parseReplyClassifications(JSON.stringify(classified), sourceIds, data.stage_controlled)
       db.transaction(() => {
         for (const result of analyzed) {
@@ -3896,7 +3998,8 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const base = data.prompt_override || baseShotPlanningPrompt(project, scenes, data.shots_per_scene)
-    const rules = await creativeRules('storyboard', id, data.model_id, base, data.skill_selections, { purpose: 'create' })
+    const withReasoning = bindTaskReasoning(model, provider, data.text_generation_options)
+    const rules = await withReasoning(() => creativeRules('storyboard', id, data.model_id, base, data.skill_selections, { purpose: 'create' }))
     const prompt = withProjectStyle(applySkillRules(base, rules), projectVisualStyle(id))
     const validatePlan = (value: z.infer<typeof shotPlanDraft>, expected: typeof scenes) => {
       const ids = new Set(value.scenes.map(scene => scene.scene_id))
@@ -3909,9 +4012,10 @@ export function buildApp(): FastifyInstance {
       }
     }
     const sourceHash = createHash('sha256').update(JSON.stringify(scenes)).digest('hex')
-    const identity = { version: 1, sourceHash, project: [project.brief, project.ratio], model: creativeModelIdentity(model.id), prompt }
+    const identity = { version: 1, sourceHash, project: [project.brief, project.ratio], model: creativeModelIdentity(model.id), prompt,
+      ...(data.text_generation_options?.reasoning ? { reasoning: data.text_generation_options.reasoning } : {}) }
     const store = generationUnitStore(id, 'legacy-shot-plan', identity)
-    const draft = await withModelAdmission(`legacy-shot-plan:${id}`, modelStepSignal(), async () => {
+    const draft = await withReasoning(() => withModelAdmission(`legacy-shot-plan:${id}`, modelStepSignal(), async () => {
       if (scenes.length <= 2) return structuredTextOutput('shot_plan', shotPlanDraft, model, provider, prompt, value => validatePlan(value, scenes))
       const steps = createGenerationSteps({ checkpoint: store.checkpoint, save: store.save, savePrivateResponse: store.savePrivateResponse, signal: modelStepSignal() })
       const units = await executeGenerationUnits<z.infer<typeof shotPlanDraft>['scenes'][number]>({ identity, units: scenes.map(scene => scene.id), steps,
@@ -3927,7 +4031,7 @@ export function buildApp(): FastifyInstance {
           return parsed
         }, validateAll: values => validatePlan({ scenes: [...values.values()] }, scenes) })
       return { scenes: [...units.values()] }
-    })
+    }))
     modelStepSignal()?.throwIfAborted()
     if (createHash('sha256').update(JSON.stringify(selectedScenes(id, data.scene_ids))).digest('hex') !== sourceHash) invalid('场次已变化，已保留生成结果，请基于当前场次重新生成')
     const raw = JSON.stringify(draft)
@@ -4107,7 +4211,8 @@ export function buildApp(): FastifyInstance {
   app.post('/api/projects/:id/script/director/chat/stream', { bodyLimit: 26 * 1024 * 1024 }, async (request, reply) => {
     const { id } = parse(idParams, request.params)
     const project = required<Project>('projects', id)
-    const { task, ...input } = parse(scriptDirectorChatInput, request.body)
+    const { task, ...parsed } = parse(scriptDirectorChatInput, request.body)
+    const input = parsed.draft_resolution ? resolveCreationAction(project, parsed) : parsed
     validateRevisionContinuation(project, input)
     const model = required<Model>('models', input.model_id)
     if (model.modality !== 'text' || !model.enabled || model.archived) invalid('请选择已启用的文本模型')
@@ -4116,6 +4221,7 @@ export function buildApp(): FastifyInstance {
     validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
 
+    bindTaskReasoning(model, provider, input.text_generation_options)
     if (task) {
       const bound = bindConversationIdentity(input, task.conversation as { id: string; messages: Array<{ id?: string; role: 'assistant' | 'user'; text: string }> })
       const prepared = resolveCreationAction(project, bound)
@@ -4194,7 +4300,8 @@ export function buildApp(): FastifyInstance {
       validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
       if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
       const source = legacyScriptSourceVersion(id), modelVersion = creativeModelIdentity(model.id)
-      return runDirectorExecutionBudget({ projectId: id, identity: { route: 'artifact', source, model: modelVersion, request: data },
+      const withReasoning = bindTaskReasoning(model, provider, data.text_generation_options)
+      return withReasoning(() => runDirectorExecutionBudget({ projectId: id, identity: { route: 'artifact', source, model: modelVersion, request: data },
         units: 1, inputChars: JSON.stringify(data).length + JSON.stringify(projectScript(id)).length, signal }, budgetSignal =>
         withModelOperationStage(({ outline: 'script_outline', characters: 'script_characters', locations: 'script_locations', props: 'script_props', episode: 'script_episode' } as const)[scriptStageForArtifact(data.artifact_type) || 'episode'], async () => {
       const signal = budgetSignal
@@ -4203,7 +4310,8 @@ export function buildApp(): FastifyInstance {
         { workflow_stage: scriptStageForArtifact(data.artifact_type), purpose: 'create' })
       const prompt = applySkillRules(base, rules)
       return withModelAdmission(`legacy-artifact:${id}:${data.artifact_type}`, modelStepSignal(signal), async () => {
-        const steps = creativeGenerationSteps(id, `legacy-artifact:${data.artifact_type}`, { version: 2, prompt, source, model: modelVersion }, signal, data.restart)
+        const steps = creativeGenerationSteps(id, `legacy-artifact:${data.artifact_type}`, { version: 2, prompt, source, model: modelVersion,
+          ...(data.text_generation_options?.reasoning ? { reasoning: data.text_generation_options.reasoning } : {}) }, signal, data.restart)
         const checkCurrent = () => {
           modelStepSignal(signal)?.throwIfAborted()
           if (legacyScriptSourceVersion(id) !== source || creativeModelIdentity(model.id) !== modelVersion) {
@@ -4223,7 +4331,7 @@ export function buildApp(): FastifyInstance {
         steps.clear()
         return { artifact_type: data.artifact_type, title: defaultArtifactTitles[data.artifact_type], content, skill_assignment: rules.assignment }
       })
-      }))
+      })))
     })))
   app.post('/api/projects/:id/script/generate', (request, reply) => withCreativeRequest(request, reply, '剧本生成', signal =>
     withModelRequestContext({ ...currentModelRequestContext(), policy: modelTaskPolicies.generation, signal: modelStepSignal(signal) }, async () => {
@@ -4237,7 +4345,8 @@ export function buildApp(): FastifyInstance {
       validateSettings(model.modality, JSON.parse(model.settings) as Record<string, unknown>, model.protocol, { base_url: provider.base_url, protocol: model.protocol, remote_id: model.remote_id })
       if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
       const source = legacyScriptSourceVersion(id), modelVersion = creativeModelIdentity(model.id)
-      return runDirectorExecutionBudget({ projectId: id, identity: { route: 'complete_script', source, model: modelVersion, request: data },
+      const withReasoning = bindTaskReasoning(model, provider, data.text_generation_options)
+      return withReasoning(() => runDirectorExecutionBudget({ projectId: id, identity: { route: 'complete_script', source, model: modelVersion, request: data },
         units: 1, inputChars: JSON.stringify(data).length + JSON.stringify(projectScript(id)).length, signal }, budgetSignal =>
         withModelOperationStage('script_episode', async () => {
       const signal = budgetSignal
@@ -4247,7 +4356,8 @@ export function buildApp(): FastifyInstance {
         { text: data.idea, workflow_stage: 'episode', purpose: 'create' })
       const prompt = applySkillRules(base, rules)
       return withModelAdmission(`legacy-script:${id}`, modelStepSignal(signal), async () => {
-        const steps = creativeGenerationSteps(id, 'legacy-complete-script', { version: 2, prompt, source, model: modelVersion }, signal, data.restart)
+        const steps = creativeGenerationSteps(id, 'legacy-complete-script', { version: 2, prompt, source, model: modelVersion,
+          ...(data.text_generation_options?.reasoning ? { reasoning: data.text_generation_options.reasoning } : {}) }, signal, data.restart)
         const checkCurrent = () => {
           modelStepSignal(signal)?.throwIfAborted()
           if (legacyScriptSourceVersion(id) !== source || creativeModelIdentity(model.id) !== modelVersion) {
@@ -4274,7 +4384,7 @@ export function buildApp(): FastifyInstance {
         steps.clear()
         return { ...draft, skill_assignment: rules.assignment, used_skills: rules.skills }
       })
-      }))
+      })))
     })))
   app.post('/api/projects/:id/shots', async request => {
     const { id } = parse(idParams, request.params)
@@ -4654,6 +4764,7 @@ export function buildApp(): FastifyInstance {
     const provider = required<Provider>('providers', model.provider_id)
     if (provider.adapter === 'demo' || provider.archived || !provider.enabled) invalid('提供商不可用，请在模型设置中启用')
     const visuallyPrepared = prepareVisualGeneration(input, model, preview)
+    bindTaskReasoningById(model.id, input.text_generation_options)
     const data = model.modality === 'text' ? visuallyPrepared : {
       ...compileProjectStyle(projectId, visuallyPrepared, preview),
       style_warnings: referenceStyleWarnings(projectId, visuallyPrepared.reference_asset_ids, projectVisualStyle(projectId)),

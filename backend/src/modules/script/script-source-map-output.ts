@@ -28,7 +28,7 @@ export async function generateSourceMapOutput(prompt: string, selected: SourcePa
   const { checkpoint, signal } = options
   const currentPrompt = prompt.replace('【原文片段】',
     '【当前证据与存储协议】\n前文160字符、24条等属于旧检索展示建议，不是事实存储或剧本质量门禁；保留全部真实内容，不截字或删前提。独立事件可自然拆分，无需为展示数量合并或丢弃。' +
-    '人物evidence.unit_id证明身份等事实，跨章时另给本章occurrence_unit_id证明出现；事件unit_id必须属于本章，辅助背景不得冒充发生位置。supporting_unit_ids保留其他真实证据，不机械丢弃多证据。坐标通过后仍须独立核对事实语义。\n【原文片段】')
+    '人物evidence.unit_id证明身份等事实，跨章时另给本章occurrence_unit_id证明出现；事件unit_id必须属于本章，辅助背景不得冒充发生位置。supporting_unit_ids只能选择其他真实证据，每个unit_id最多出现一次，不能包含主evidence.unit_id；没有独立辅助证据时省略该字段。坐标通过后仍须独立核对事实语义。\n【原文片段】')
   signal.throwIfAborted()
   let seed: Section[] = []
   if (checkpoint.seed) {
@@ -70,19 +70,35 @@ export async function generateSourceMapOutput(prompt: string, selected: SourcePa
     options.onProgress?.(value?.items?.length ?? 0)
     options.persist()
   } })
+  const maxAllowedUnit = selected.at(-1)?.units.at(-1)?.id ?? Infinity
   const sections = await generatePagedReviewItems({ id: pageId, name: 'script_source_map', purpose: 'generation',
     itemSchema: sourceMapSectionSchema, prompt: currentPrompt + '\n【目录条目续传】\n' +
       'items每项对应原sections中的一个完整目录条目，沿用原output_window及全部事实和证据要求。' +
       `已保留前缀的事实至少延伸至unit_id=${seededThrough}；新增目录起点必须在此之后，不能把已保留事件切给新条目。\n` +
       '从已保留的最后一项之后继续，按真实语义补齐剩余章节，不重复、不改写、不合并已保留条目。' +
       '已保留条目只是本页前缀，最后一项尚无确定结束边界；不能据此认定后续原文已覆盖。' +
-      '只有指定范围内全部章节、事件和人物均已完整列出，才可complete=true；不得为适应额度而概括或省略。',
+      '只有指定范围内全部章节、事件和人物均已完整列出，才可complete=true；不得为适应额度而概括或省略。\n' +
+      `⚠️ 严禁输出 start_unit 或任何 unit_id 超过 ${maxAllowedUnit} 的条目！即使原文中看到后续内容，也必须停在当前页边界。超出范围的条目将被丢弃，不会保存。`,
     generate, signal, steps, initialItems: seed, maxItems: 1000, syntaxRecovery: true, localRepairOnly: options.localRepairOnly,
     preserveCheckpointIdentity: true, localRepairPlanner: () => sourceMapLocalRepairPlanner(selected, true, false, options.allPassages || selected),
     recoverOutputLimit: issue => issue.outputLimitKind === 'text',
     normalizeRecoveredItem: item => (normalizeSourceOutput('script_source_map_page', { items: [item] }) as { items: unknown[] }).items[0],
     validateItems: (items, complete) => {
       if (seed.length && items.slice(seed.length).some(item => item.start_unit <= seededThrough)) throw new Error('续传目录边界切入已保留前缀的事件范围，原候选未采用')
+      // Auto-truncate out-of-bounds items before validation
+      const validItems = items.filter(item => {
+        const allUnitIds = [
+          item.start_unit,
+          ...item.events.flatMap(e => [e.evidence.unit_id, ...(e.evidence.supporting_unit_ids || [])]),
+          ...item.characters.flatMap(c => [c.evidence.unit_id, ...(c.evidence.supporting_unit_ids || []), c.evidence.occurrence_unit_id].filter(id => id !== undefined))
+        ]
+        return allUnitIds.every(id => id <= maxAllowedUnit)
+      })
+      if (validItems.length < items.length) {
+        const truncatedCount = items.length - validItems.length
+        console.warn(`[script-source-map] 自动截断 ${truncatedCount} 个越界条目（超过 unit_id=${maxAllowedUnit}）`)
+        items.splice(validItems.length, truncatedCount)
+      }
       if (items.length) sourceSectionRanges({ sections: items }, selected)
       if (complete) sourceMapSchema.parse({ sections: items })
     },

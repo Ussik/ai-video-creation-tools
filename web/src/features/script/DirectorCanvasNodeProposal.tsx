@@ -1,3 +1,4 @@
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Group, Modal, Stack, Table, Text, Textarea } from '@mantine/core'
 import { canvasNodeProposalSourceKey, type CanvasNodeProposal, type CanvasNodeProposalSource } from '@video-studio/shared/canvas/canvas-node-proposal'
@@ -8,6 +9,7 @@ export type DirectorCanvasNodeProposalProps = {
   source: CanvasNodeProposalSource
   modelId: string
   modelName?: string
+  textGenerationOptions?: TextGenerationOptions
   composerInput: string
   initialContext?: string
   disabled?: boolean
@@ -19,7 +21,7 @@ export type DirectorCanvasNodeProposalProps = {
 const parameterLabels = { ratio: '画面比例', resolution: '分辨率', duration: '时长（秒）', generate_audio: '生成声音' } as const
 const valueLabel = (value: unknown) => value === true ? '开启' : value === false ? '关闭' : value === null || value === undefined ? '默认' : String(value)
 
-export default function DirectorCanvasNodeProposal({ source, modelId, modelName, composerInput, initialContext, disabled, hidden, onBusyChange, onApply }: DirectorCanvasNodeProposalProps) {
+export default function DirectorCanvasNodeProposal({ source, modelId, modelName, textGenerationOptions, composerInput, initialContext, disabled, hidden, onBusyChange, onApply }: DirectorCanvasNodeProposalProps) {
   const sourceKey = canvasNodeProposalSourceKey(source)
   const scopeKey = `${sourceKey}:${modelId}`
   const scope = useRef(scopeKey)
@@ -92,7 +94,7 @@ export default function DirectorCanvasNodeProposal({ source, modelId, modelName,
     const current = () => requestEpoch.current === epoch && scope.current === capturedScope && !controller.signal.aborted
     try {
       const next = await api<CanvasNodeProposal>(`/projects/${encodeURIComponent(source.project_id)}/canvases/${encodeURIComponent(source.canvas_id)}/node-proposals`, {
-        ...json('POST', { text_model_id: modelId, instructions: instructions.trim(), source }), signal: controller.signal,
+        ...json('POST', { text_model_id: modelId, text_generation_options: textGenerationOptions, instructions: instructions.trim(), source }), signal: controller.signal,
       })
       if (!current()) return
       if (canvasNodeProposalSourceKey(next.source) !== sourceKey) throw new Error('返回的方案来源与当前节点不一致，请重新读取节点')

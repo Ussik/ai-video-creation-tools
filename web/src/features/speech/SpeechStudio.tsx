@@ -2,7 +2,7 @@ import { StudioMediaPlayer } from '../../shared/ui/media/StudioMediaPlayer'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { useEffect, useRef, useState } from 'react'
 import { Tabs, UnstyledButton, ActionIcon, Button, Checkbox, Modal, NumberInput, PasswordInput, Select, Textarea, TextInput, type ComboboxProps } from '@mantine/core'
-import { AudioLines, Check, Maximize2, Minimize2, Mic2, Plus, Settings2, Trash2, Volume2, Clapperboard } from 'lucide-react'
+import { ArrowLeft, AudioLines, Check, Maximize2, Minimize2, Mic2, Plus, Settings2, Trash2, Volume2, Clapperboard } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { ScriptScene, Shot } from '../../shared/api/api'
 import { isSpeechTakeCurrent, type SpeechVoice as Voice, type SpeechTake as Take, type SpeechLineDraft as LineDraft, type SpeechLine, type SpeechData } from '@video-studio/shared/media/speech-timeline'
@@ -18,7 +18,9 @@ type SpeechConfig = { enabled: boolean; has_key: boolean; default_speaker: strin
 type SyncPreview = { sync_token: string; added: number; updated: number; removed: number; preserved: number;
   changes: Array<{ kind: 'added' | 'updated' | 'removed' | 'preserved'; role?: string; scene_id: string; before?: string; after?: string }> }
 export type SpeechStudioProps = { projectId: string; projectName?: string; scenes?: ScriptScene[]; shots?: Shot[]; initialLineId?: string | null;
-  initialSceneId?: string | null; initialShotId?: string | null; finalCutCanvasId?: string | null; onOpenFinalCut?: () => void; onClose: () => void; onAssetsChanged?: () => Promise<unknown> | void }
+  initialSceneId?: string | null; initialShotId?: string | null; finalCutCanvasId?: string | null; onOpenFinalCut?: () => void; onClose: () => void; onAssetsChanged?: () => Promise<unknown> | void;
+  presentation?: 'modal' | 'page'; headerControls?: React.ReactNode; registerNavigationGuard?: (guard: (() => Promise<boolean>) | null) => void;
+  onWorkspaceChange?: (workspace: 'speech' | 'studio') => void }
 
 const isActive = (take: Take) => take.status === 'queued' || take.status === 'running'
 const errorText = (issue: unknown) => issue instanceof Error ? issue.message : String(issue)
@@ -37,7 +39,7 @@ const filterComboboxProps: ComboboxProps = {
   middlewares: { flip: true, shift: { mainAxis: true, padding: 12 } },
 }
 
-export default function SpeechStudio({ projectId, projectName, scenes = [], shots = [], initialLineId, initialSceneId, initialShotId, finalCutCanvasId, onOpenFinalCut, onClose, onAssetsChanged }: SpeechStudioProps) {
+export default function SpeechStudio({ projectId, projectName, scenes = [], shots = [], initialLineId, initialSceneId, initialShotId, finalCutCanvasId, onOpenFinalCut, onClose, onAssetsChanged, presentation = 'modal', headerControls, registerNavigationGuard, onWorkspaceChange }: SpeechStudioProps) {
   const [config, setConfig] = useState<SpeechConfig | null>(null), [data, setData] = useState<SpeechData>({ voices: [], lines: [] })
   const [voices, setVoices] = useState<Voice[]>([]), [drafts, setDrafts] = useState<Record<string, LineDraft>>({})
   const [selectedId, setSelectedId] = useState(''), [tab, setTab] = useState<'lines' | 'voices'>('lines')
@@ -127,7 +129,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
     return line.takes.some(isActive) ? 'running' : line.selected_asset_id ? current ? 'selected' : 'stale' : line.takes.some(item => item.asset_id) ? 'candidates' : 'missing'
   }
   const statusLabels: Record<string, string> = { running: '生成中', selected: '已选用', stale: '需更新配音', candidates: '待选用', missing: '待配音', source: '剧本有变化' }
-  const visibleLines = data.lines.filter(line => (sceneFilter === 'all' || line.scene_id === sceneFilter) &&
+  const visibleLines = data.lines.filter(line => (sceneFilter === 'all' || sceneFilter === 'manual' && !line.scene_id || line.scene_id === sceneFilter) &&
     (roleFilter === 'all' || line.voice_id === roleFilter) && (statusFilter === 'all' || lineStatus(line) === statusFilter))
   const selectedTake = selected?.takes.find(take => take.asset_id === selected.selected_asset_id)
   const selectedStale = !!selected?.selected_is_stale || !!selectedTake && !!draft && !isSpeechTakeCurrent(selectedTake, draft, voice)
@@ -135,10 +137,27 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
     const stored = data.lines.find(item => item.id === id)
     return stored ? JSON.stringify(editable(stored)) !== JSON.stringify(value) : !!(value.text.trim() || value.instructions.trim() || value.context_text.trim())
   })
+  const navigationGuard = useRef<() => Promise<boolean>>(async () => true)
+  navigationGuard.current = async () => {
+    if (busy || settingsOpen || dialog) return false
+    if ((voiceDirty || unsavedLines || apiKey.trim()) && !await confirm({ title: presentation === 'page' ? '离开配音' : '关闭配音', message: '有未保存的修改，离开后将丢弃这些修改。', confirmLabel: presentation === 'page' ? '丢弃并离开' : '丢弃并关闭', cancelLabel: '继续编辑' })) return false
+    voicePreview.stop()
+    return true
+  }
+  useEffect(() => {
+    if (presentation !== 'page' || !registerNavigationGuard) return
+    registerNavigationGuard(() => navigationGuard.current())
+    return () => registerNavigationGuard(null)
+  }, [presentation, registerNavigationGuard])
+  useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => {
+      if (voiceDirty || unsavedLines || apiKey.trim()) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [voiceDirty, unsavedLines, apiKey])
   async function requestClose() {
-    if (busy || settingsOpen || dialog) return
-    if ((voiceDirty || unsavedLines || apiKey.trim()) && !await confirm({ title: '关闭配音', message: '有未保存的修改，关闭后将丢弃这些修改。', confirmLabel: '丢弃并关闭', cancelLabel: '继续编辑' })) return
-    voicePreview.stop(); onClose()
+    if (await navigationGuard.current()) onClose()
   }
   async function requestSettingsClose() {
     if (busy || dialog) return
@@ -244,8 +263,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
     setVoices(current => current.map((row, i) => i === index ? { ...row, ...values } : row))
   }
 
-  return <><Modal opened fullScreen={expanded} onClose={() => void requestClose()} trapFocus={!settingsOpen && !dialog} closeOnClickOutside={!busy && !settingsOpen && !dialog} closeOnEscape={!busy && !settingsOpen && !dialog} closeButtonProps={{ disabled: !!busy || settingsOpen || !!dialog }} centered size="min(1080px, 94vw)" radius={expanded ? 0 : 18} title={<span className="speech-title"><Mic2 size={18} />配音{projectName && <small>{projectName}</small>}</span>}
-    classNames={{ content: `speech-studio${expanded ? ' speech-studio-expanded' : ''}`, header: 'speech-studio-header', body: 'speech-studio-body' }}>
+  const content = <>
     <div className="speech-toolbar">
       <Tabs value={tab} onChange={value => { if (value) setTab(value as typeof tab) }} activateTabWithKeyboard={true} className="speech-tabs-root"><Tabs.List className="speech-tabs" aria-label="配音工作区">
         <Tabs.Tab type="button"   onClick={() => setTab('lines')} value={'lines'}>台词与旁白<span className="speech-tab-count">{data.lines.length}</span></Tabs.Tab>
@@ -256,7 +274,7 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
         onOpenFinalCut()
       }}>查看成片</Button>}
       <Button type="button" variant="subtle" size="xs" className="speech-config-toggle" aria-label="全局语音配置" aria-haspopup="dialog" aria-expanded={settingsOpen} disabled={loading || !!busy} leftSection={<Settings2 size={14} />} rightSection={config?.has_key && config.enabled ? <span className="speech-connected">已配置</span> : undefined} onClick={() => { setConfigError(''); setSettingsOpen(true) }}>全局语音配置</Button>
-      <ActionIcon variant="subtle" aria-label={expanded ? '收起配音工作区' : '展开配音工作区'} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</ActionIcon></div>
+      {presentation === 'modal' && <ActionIcon variant="subtle" aria-label={expanded ? '收起配音工作区' : '展开配音工作区'} onClick={() => setExpanded(value => !value)}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</ActionIcon>}</div>
     </div>
     {error && <p className="speech-error" role="alert">{error}</p>}
     {loading ? <div className="speech-empty">正在读取配音资料…</div> : tab === 'voices' ? <section className="speech-voices">
@@ -293,9 +311,19 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
       {voiceIssue && <p className="speech-help">{voiceIssue}</p>}
       <footer><span>{voiceDirty ? '有未保存的声音配置' : voices.length ? '声音配置已保存' : '尚未配置角色声音'}</span><Button size="xs" className="speech-primary" disabled={!!busy || !voiceDirty || !!voiceIssue} loading={busy === 'voices'} onClick={() => void action('voices', async () => { await saveVoiceBindings(); setNotice('角色声音已保存') })}>保存角色声音</Button></footer>
     </section> : <div className="speech-workspace">
+      {presentation === 'page' && <nav className="speech-scene-rail" aria-label="配音场次">
+        <header><strong>场次</strong><span>{scenes.length}</span></header>
+        {[{ id: 'all', heading: '全部台词' }, ...scenes].map(scene => {
+          const lines = data.lines.filter(line => scene.id === 'all' || line.scene_id === scene.id)
+          return <UnstyledButton key={scene.id} className={`speech-scene-item${sceneFilter === scene.id ? ' is-active' : ''}`} aria-pressed={sceneFilter === scene.id} onClick={() => { setSceneFilter(scene.id); const first = lines.find(line => (roleFilter === 'all' || line.voice_id === roleFilter) && (statusFilter === 'all' || lineStatus(line) === statusFilter)); if (first) setSelectedId(first.id) }}>
+            <span>{scene.heading}</span><small>{lines.length} 条</small>
+          </UnstyledButton>
+        })}
+        {data.lines.some(line => !line.scene_id) && <UnstyledButton className={`speech-scene-item${sceneFilter === 'manual' ? ' is-active' : ''}`} aria-pressed={sceneFilter === 'manual'} onClick={() => { setSceneFilter('manual'); const first = data.lines.find(line => !line.scene_id); if (first) setSelectedId(first.id) }}><span>手动台词</span><small>{data.lines.filter(line => !line.scene_id).length} 条</small></UnstyledButton>}
+      </nav>}
       <aside className="speech-sidebar">
-        <header><strong>台词列表</strong><ActionIcon type="button" className="speech-icon-button" aria-label="新增台词" disabled={!!busy} onClick={() => { setDrafts(current => ({ ...current, new: current.new || blank(voices[0]?.id || null) })); setSelectedId('new') }} data-workspace-control=""><Plus size={16} /></ActionIcon></header>
-        <div className="speech-list-filters"><Select size="xs" aria-label="按场次筛选台词" comboboxProps={filterComboboxProps} value={sceneFilter} allowDeselect={false} searchable data={[{ value: 'all', label: '全部场次' }, ...scenes.map(scene => ({ value: scene.id, label: scene.heading }))]} onChange={value => setSceneFilter(value || 'all')} />
+        <header><strong>{presentation === 'page' ? '台词与声音' : '台词列表'}</strong><ActionIcon type="button" className="speech-icon-button" aria-label="新增台词" disabled={!!busy} onClick={() => { setDrafts(current => ({ ...current, new: current.new || blank(voices[0]?.id || null) })); setSelectedId('new') }} data-workspace-control=""><Plus size={16} /></ActionIcon></header>
+        <div className="speech-list-filters"><Select size="xs" aria-label="按场次筛选台词" comboboxProps={filterComboboxProps} value={sceneFilter} allowDeselect={false} searchable data={[{ value: 'all', label: '全部场次' }, ...scenes.map(scene => ({ value: scene.id, label: scene.heading })), ...(data.lines.some(line => !line.scene_id) ? [{ value: 'manual', label: '手动台词' }] : [])]} onChange={value => setSceneFilter(value || 'all')} />
           <Select size="xs" aria-label="按角色筛选台词" comboboxProps={filterComboboxProps} value={roleFilter} allowDeselect={false} searchable data={[{ value: 'all', label: '全部角色' }, ...voiceOptions]} onChange={value => setRoleFilter(value || 'all')} />
           <Select size="xs" aria-label="按状态筛选台词" comboboxProps={filterComboboxProps} value={statusFilter} allowDeselect={false} data={[{ value: 'all', label: '全部状态' }, ...Object.entries(statusLabels).map(([value, label]) => ({ value, label }))]} onChange={value => setStatusFilter(value || 'all')} /></div>
         <WorkspaceDisclosure className="speech-import" label="从剧本导入">
@@ -371,7 +399,13 @@ export default function SpeechStudio({ projectId, projectName, scenes = [], shot
       </main> : <div className="speech-empty">选择台词，或点击加号新增。</div>}
     </div>}
     {notice && <div className="speech-notice" role="status">{notice}</div>}
-  </Modal>
+  </>
+  return <>
+    {presentation === 'page' ? <section className="speech-studio speech-studio-page" aria-label="配音工作台" data-v4-page="speech">
+      <header className="speech-page-heading"><div><Button className="workspace-project-back" variant="subtle" size="xs" leftSection={<ArrowLeft size={15} />} disabled={!!busy || settingsOpen || !!dialog} onClick={() => void requestClose()} aria-label="返回画布">{projectName || '返回画布'}</Button><h1>配音</h1>{headerControls}</div><nav className="speech-page-local-tabs" aria-label="配音工作区"><UnstyledButton type="button" className="is-active" onClick={() => onWorkspaceChange?.('speech')} data-workspace-control="">台词</UnstyledButton><UnstyledButton type="button" disabled={!onOpenFinalCut || !!busy} onClick={() => { onWorkspaceChange?.('studio'); onOpenFinalCut?.() }} data-workspace-control="">成片音轨</UnstyledButton></nav></header>
+      <div className="speech-studio-body">{content}</div>
+    </section> : <Modal opened fullScreen={expanded} onClose={() => void requestClose()} trapFocus={!settingsOpen && !dialog} closeOnClickOutside={!busy && !settingsOpen && !dialog} closeOnEscape={!busy && !settingsOpen && !dialog} closeButtonProps={{ disabled: !!busy || settingsOpen || !!dialog }} centered size="min(1080px, 94vw)" radius={expanded ? 0 : 18} title={<span className="speech-title"><Mic2 size={18} />配音{projectName && <small>{projectName}</small>}</span>}
+      classNames={{ content: `speech-studio${expanded ? ' speech-studio-expanded' : ''}`, header: 'speech-studio-header', body: 'speech-studio-body' }}>{content}</Modal>}
   <Modal opened={settingsOpen} onClose={() => void requestSettingsClose()} title={<span className="speech-settings-title"><Settings2 size={18} />全局语音配置</span>} centered size="sm" zIndex={480}
     trapFocus={!dialog} closeOnClickOutside={!busy && !dialog} closeOnEscape={!busy && !dialog} closeButtonProps={{ disabled: !!busy || !!dialog, 'aria-label': '关闭语音配置' }}
     classNames={{ content: 'speech-settings-modal', header: 'speech-settings-header', body: 'speech-settings-body' }}>

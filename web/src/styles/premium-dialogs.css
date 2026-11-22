@@ -1,0 +1,298 @@
+/* Floating surfaces. Preserve each production workspace's dimensions and scroll owner. */
+:where(.mantine-Modal-content, .mantine-Drawer-content) {
+  color: var(--fc-text);
+  background-color: var(--fc-panel);
+  background-image: linear-gradient(160deg, color-mix(in srgb, var(--fc-text) 2%, transparent), transparent 38%);
+}
+
+.mantine-Modal-content:not([data-full-screen]) {
+  border-color: var(--fc-border-soft);
+  box-shadow: var(--fc-modal-shadow);
+}
+
+:where(.mantine-Modal-title, .mantine-Drawer-title) {
+  min-width: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+:where(.mantine-Modal-header, .mantine-Drawer-header) {
+  gap: 16px;
+  background-color: var(--fc-panel);
+}
+
+:where(.mantine-Modal-close, .mantine-Drawer-close) {
+  flex-shrink: 0;
+  border-radius: 7px;
+  color: var(--fc-text-muted);
+}
+
+:where(.mantine-Modal-close, .mantine-Drawer-close):hover:not(:disabled) {
+  background: var(--fc-surface-hover);
+  color: var(--fc-text);
+}
+
+:where(.mantine-Modal-body, .mantine-Drawer-body) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+:where(.mantine-Modal-body, .mantine-Drawer-body) :is(pre, code) {
+  overflow-wrap: anywhere;
+}
+
+:where(.mantine-Modal-body, .mantine-Drawer-body) pre {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* Simple confirmations share a fixed heading and action bar; only copy scrolls. */
+.app-dialog.mantine-Modal-content {
+  display: flex;
+  flex-direction: column;
+  width: auto;
+  max-height: calc(100dvh - var(--modal-y-offset, 20px) * 2);
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--fc-panel);
+}
+
+.app-dialog .app-dialog-header {
+  flex: none;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--fc-border-soft);
+}
+
+.app-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  color: var(--fc-text);
+  font-size: 16px;
+  font-weight: 550;
+  letter-spacing: -.15px;
+}
+
+.app-dialog .app-dialog-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--fc-border-soft);
+  border-radius: 9px;
+  background: var(--fc-surface-muted);
+  color: var(--fc-text-secondary);
+}
+
+.app-dialog.app-dialog-danger .app-dialog-icon {
+  border-color: color-mix(in srgb, var(--fc-danger) 22%, transparent);
+  background: var(--fc-danger-soft);
+  color: var(--fc-danger);
+}
+
+.app-dialog .app-dialog-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.app-dialog-scroll-region {
+  min-height: 0;
+  padding: 22px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fc-border-strong) transparent;
+}
+
+.app-dialog .app-dialog-copy {
+  overflow: visible;
+}
+
+.app-dialog .app-dialog-copy > p:first-child {
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--fc-text-secondary);
+}
+
+.app-dialog-scroll-region > .mantine-TextInput-root {
+  margin-top: 20px;
+}
+
+.app-dialog .app-dialog-actions {
+  flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 16px 24px;
+  border-top: 1px solid var(--fc-border-soft);
+  background: var(--fc-panel);
+}
+
+.app-dialog .app-dialog-actions .mantine-Button-root {
+  min-width: 80px;
+  height: 36px;
+  border-radius: 8px;
+}
+
+/* Named, ordinary dialogs can use native content scrolling. Studio modals retain theirs. */
+:is(.pc-candidate-modal, .pc-shot-candidate-modal, .pc-reference-modal, .reference-preparation-dialog, .pc-reference-preview).mantine-Modal-content {
+  max-height: calc(100dvh - var(--modal-y-offset, 20px) * 2);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fc-border-strong) transparent;
+}
+
+.pc-confirm-modal .pc-confirm-modal-header {
+  z-index: 2;
+  background: var(--fc-panel);
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-workspace, .pc-shot-candidate-workspace) {
+  gap: 24px;
+  align-items: start;
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-grid, .pc-shot-candidate-grid) {
+  gap: 10px;
+  padding: 2px 6px 4px 2px;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-grid, .pc-shot-candidate-grid) > button[aria-pressed='true'] {
+  border-color: var(--fc-primary);
+  box-shadow: 0 0 0 1px var(--fc-primary);
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-large-image, .pc-shot-candidate-preview) {
+  background: var(--fc-canvas);
+  border-color: var(--fc-border-soft);
+  border-radius: 10px;
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-meta, .pc-shot-candidate-meta) {
+  gap: 6px;
+  line-height: 1.65;
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-actions, .pc-shot-candidate-actions) {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--fc-border-soft);
+}
+
+/* These managers render the use/confirm action first in DOM; display it at the right. */
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-actions, .pc-shot-candidate-actions) > .mantine-Button-root:first-child {
+  order: 1;
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-actions, .pc-shot-candidate-actions) > .mantine-Button-root:first-child:not(:disabled):not([data-disabled]) {
+  border-color: var(--fc-action-border);
+  background: var(--fc-action-gradient);
+  box-shadow: var(--fc-action-shadow);
+  color: var(--fc-on-action);
+}
+
+:is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-actions, .pc-shot-candidate-actions) > .mantine-Button-root:first-child:hover:not(:disabled):not([data-disabled]) {
+  background: var(--fc-action-gradient-hover);
+}
+
+/* Existing bounded layouts already own scrolling; polish their fixed bars only. */
+:is(.prompt-optimization-footer, .prompt-skill-footer, .storyboard-planner-actions, .storyboard-production-actions, .clip-storyboard-footer, .speech-config-actions, .canvas-deletion-actions, .sd-source-dialog-actions, .pc-prompt-fixed-dialog-footer, .pc-prompt-source-dialog-footer) {
+  gap: 10px;
+  border-top-color: var(--fc-border-soft);
+}
+
+:is(.prompt-optimization-footer, .clip-storyboard-footer, .canvas-deletion-actions) {
+  background: var(--fc-panel);
+}
+
+.canvas-deletion-actions,
+.mantine-Modal-body .hp-editor-actions {
+  justify-content: flex-end;
+  padding-top: 18px;
+  border-top: 1px solid var(--fc-border-soft);
+}
+
+.prompt-optimization-modal .prompt-optimization-content {
+  padding: 24px;
+}
+
+.prompt-optimization-modal .prompt-optimization-footer {
+  padding: 16px 24px;
+}
+
+:is(.prompt-optimization-comparison, .basic-cut-review-frames, .cut-review-frames, .candidate-compare-grid) {
+  gap: 18px;
+}
+
+:is(.basic-cut-review-frames img, .cut-review-frame-image, .candidate-compare-frame-image) {
+  border: 1px solid var(--fc-border-soft);
+  border-radius: 8px;
+  background: var(--fc-canvas);
+}
+
+:is(.cut-review-modal, .candidate-compare-modal) .mantine-Modal-content {
+  max-height: calc(100dvh - var(--modal-y-offset, 20px) * 2);
+}
+
+:is(.cut-review-modal, .candidate-compare-modal) .mantine-Modal-title {
+  font-weight: 550;
+}
+
+:is(.basic-cut-review-actions, .cut-review-actions) {
+  gap: 9px;
+  padding-top: 16px;
+  border-top: 1px solid var(--fc-border-soft);
+}
+
+/* Keep the reference drawer's own zero-padding, full-height scroll layout. */
+.pc-shot-references-content.mantine-Drawer-content {
+  border-left-color: var(--fc-border-soft);
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--fc-text) 3%, transparent), -18px 0 56px #070b1233;
+}
+
+.pc-binding-drawer > header {
+  border-bottom-color: var(--fc-border-soft);
+  background: var(--fc-panel);
+}
+
+.pc-binding-drawer > footer {
+  gap: 12px;
+  background: var(--fc-panel);
+  border-top: 1px solid var(--fc-border-soft);
+}
+
+@media (max-width: 700px) {
+  .prompt-optimization-modal .prompt-optimization-content { padding: 18px; }
+  .prompt-optimization-modal .prompt-optimization-footer { padding: 14px 18px; }
+  .prompt-optimization-footer > :is(.mantine-Text-root, .mantine-Group-root) { width: 100%; }
+  .prompt-optimization-footer > .mantine-Group-root { justify-content: flex-end; }
+  :is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-workspace, .pc-shot-candidate-workspace) { gap: 18px; }
+  :is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-grid, .pc-shot-candidate-grid) { padding-right: 2px; }
+}
+
+@media (max-width: 480px) {
+  .app-dialog .app-dialog-header { padding: 18px; }
+  .app-dialog-scroll-region { padding: 18px; }
+  .app-dialog .app-dialog-actions { padding: 14px 18px; }
+  .app-dialog .app-dialog-actions .mantine-Button-root { min-width: 0; flex: 1 1 auto; height: auto; min-height: 36px; padding-block: 8px; }
+  .app-dialog .app-dialog-actions .mantine-Button-label { white-space: normal; line-height: 1.5; }
+  :is(.canvas-deletion-actions, .sd-source-dialog-actions, .speech-config-actions) { flex-wrap: wrap; justify-content: flex-end; }
+  :is(.canvas-deletion-actions, .sd-source-dialog-actions, .speech-config-actions) > .mantine-Button-root { max-width: 100%; height: auto; min-height: 36px; padding-block: 8px; }
+  :is(.canvas-deletion-actions, .sd-source-dialog-actions, .speech-config-actions) > .mantine-Button-root .mantine-Button-label { white-space: normal; line-height: 1.5; }
+  :is(.storyboard-planner-actions, .storyboard-production-actions) .reference-footer-primary-actions { width: 100%; }
+  :is(.pc-candidate-modal, .pc-shot-candidate-modal) :is(.pc-candidate-actions, .pc-shot-candidate-actions) > .mantine-Button-root { flex: 1 1 auto; }
+  .pc-binding-drawer > footer { flex-wrap: wrap; }
+}

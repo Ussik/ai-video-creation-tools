@@ -56,6 +56,37 @@ test('only confirmed retryable provider failures resume a failed run; receipts a
   }
 })
 
+test('durable reference preparation keeps its reasoning when reopened and uses a new selection on restart', async () => {
+  const { scope, coordinator, plan } = await fixture()
+  const provider = await app.inject({ method: 'POST', url: '/api/providers', payload: { name: 'fixture', base_url: 'https://fixture.invalid/v1' } })
+  assert.equal(provider.statusCode, 200, provider.body)
+  const model = await app.inject({ method: 'POST', url: '/api/models', payload: { provider_id: provider.json().id, name: 'fixture', remote_id: 'fixture', modality: 'text', protocol: 'chat_completions', settings: {
+    text_api: { mode: 'standard', max_output_tokens: 4096, reasoning: { enabled: true, mode: 'effort', default_level: 'medium',
+      levels: [{ level: 'medium', api_value: 'medium' }, { level: 'high', api_value: 'high' }] } },
+  } } })
+  assert.equal(model.statusCode, 200, model.body)
+  const model_id = model.json().id
+  await assert.rejects(coordinator.execute({ model_id, request_id: randomUUID(), text_generation_options: { reasoning: 'high' } }, freshSignal(), async ({ text_generation_options }) => {
+    assert.deepEqual(text_generation_options, { reasoning: 'high' })
+    request()
+    throw Object.assign(new TextProviderError('fixture', true, 'stream_read_error'), { delivery: 'completed', responseTerminated: true })
+  }), /fixture/)
+  const reopened = canvasPreparationRuns(scope)
+  const runId = reopened.snapshot()!.preparation.run_id
+  assert.deepEqual(reopened.snapshot()?.preparation.text_generation_options, { reasoning: 'high' })
+  const continued = await reopened.execute({ run_id: runId, request_id: randomUUID(), text_generation_options: { reasoning: 'medium' } }, freshSignal(), async ({ text_generation_options }) => {
+    assert.deepEqual(text_generation_options, { reasoning: 'high' })
+    return plan
+  })
+  assert.equal(continued.preparation?.run_id, runId)
+  const replacementId = randomUUID()
+  const restarted = await reopened.execute({ model_id, restart_from_run_id: runId, request_id: replacementId, text_generation_options: { reasoning: 'medium' } }, freshSignal(), async ({ text_generation_options }) => {
+    assert.deepEqual(text_generation_options, { reasoning: 'medium' })
+    return plan
+  })
+  assert.equal(restarted.preparation?.run_id, replacementId)
+})
+
 test('identical in-flight actions join, competing actions fail and durable receipts never redispatch', async () => {
   const f = await fixture(), input = { model_id: 'fake-model', request_id: randomUUID() }
   let release!: () => void, calls = 0

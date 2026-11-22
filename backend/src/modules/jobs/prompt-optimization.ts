@@ -1,3 +1,4 @@
+import { bindTaskReasoning, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { canOptimizeImagePrompt, jobPromptRequest } from '@video-studio/shared/jobs/prompt-optimization'
@@ -14,6 +15,7 @@ export function registerPromptOptimizationRoutes(app: FastifyInstance, context: 
     const { id, jobId } = z.object({ id: z.string().min(1).max(100), jobId: z.string().min(1).max(100) }).parse(request.params)
     const input = z.object({
       model_id: z.string().min(1).max(100),
+      text_generation_options: textGenerationOptionsInput,
       prompt: z.string().trim().min(1).max(80_000).optional(),
       adjustment_request: z.string().trim().max(4_000).default(''),
     }).strict().parse(request.body)
@@ -35,8 +37,8 @@ export function registerPromptOptimizationRoutes(app: FastifyInstance, context: 
       JSON.stringify({ prompt: input.prompt ?? original.prompt, adjustment_request: input.adjustment_request, rejection_reason: job.error,
         parameters: { ratio: original.ratio, resolution: original.resolution, mode: original.mode },
         reference_count: Array.isArray(original.reference_asset_ids) ? original.reference_asset_ids.length : 0 })
-    return generateStructuredOutput('image_prompt_optimization', z.object({
+    return bindTaskReasoning(model, provider, input.text_generation_options)(() => generateStructuredOutput('image_prompt_optimization', z.object({
       prompt: z.string().trim().min(1).max(80_000), changes: z.array(z.string().trim().min(1).max(500)).min(1).max(8),
-    }).strict(), (text, contract) => context.generateText(id, model.id, text, contract, signal), task, { signal })
+    }).strict(), (text, contract) => context.generateText(id, model.id, text, contract, signal), task, { signal }))
   }))
 }

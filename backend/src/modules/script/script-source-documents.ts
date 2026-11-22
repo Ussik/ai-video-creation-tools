@@ -18,6 +18,8 @@ import { legacyTerminatedSourceRequest } from './source-model-legacy-recovery.js
 import { prepareSourceWork, sourceAnalysisResume } from './script-source-checkpoints.js'
 import { sourceStoryProgress } from './script-source-story-progress.js'
 import { hasUsableSourceQuality, sourceQualitySummary } from './script-source-quality.js'
+import { bindTaskReasoningById, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
+import { taskReasoningChoices } from '@video-studio/shared/models/task-reasoning'
 
 const maxFileBytes = scriptSourceFileLimit
 const maxCharacters = scriptSourceCharacterLimit
@@ -223,14 +225,15 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
   app.post('/api/projects/:id/script/source/analysis', async request => {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
-    const data = parse(z.object({ model_id: z.string().trim().min(1).max(120), source_updated_at: z.string().min(1),
+    const data = parse(z.object({ model_id: z.string().trim().min(1).max(120), source_updated_at: z.string().min(1), text_generation_options: textGenerationOptionsInput,
       review_feedback: z.string().trim().min(1).max(6000).optional(),
       confirm_new_quality_round: z.literal(true).optional(),
       quality_scope: z.object({ analysis_id: z.string().min(1).max(120), review_hash: z.string().regex(/^[a-f0-9]{64}$/),
         findings_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional() }).strict(), request.body)
     if (scriptSourceDocument(id)?.updated_at !== data.source_updated_at) throw Object.assign(new Error('原剧本来源已变化，请刷新后重新分析'), { statusCode: 409 })
     if (data.review_feedback || data.quality_scope || data.confirm_new_quality_round) throw Object.assign(new Error('原稿分析只整理和复用资料，不再启动质量审核、修补、复核循环。'), { statusCode: 409 })
-    return publicAnalysis(analyzer.start(id, data.model_id, { sourceUpdatedAt: data.source_updated_at, explicitDispatch: true, extractionOnly: true }), effectiveScriptSource(id)!.content, id)
+    return publicAnalysis(analyzer.start(id, data.model_id, { sourceUpdatedAt: data.source_updated_at, explicitDispatch: true, extractionOnly: true,
+      textGenerationOptions: data.text_generation_options }), effectiveScriptSource(id)!.content, id)
   })
   app.post('/api/projects/:id/script/source/analysis/revalidate', async request => {
     const { id } = parse(idParams, request.params)
@@ -293,7 +296,14 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
   app.post('/api/projects/:id/script/source', async request => {
     const { id } = parse(idParams, request.params)
     required<Project>('projects', id)
-    const query = parse(z.object({ model_id: z.string().trim().min(1).max(120).optional() }).strict(), request.query)
+    const activeAnalysis = scriptSourceAnalysis(id)
+    if (activeAnalysis && ['queued', 'running'].includes(activeAnalysis.status)) {
+      throw Object.assign(new Error('当前正在分析剧本，分析完成或暂停后才能替换原稿'), { statusCode: 409, code: 'script_source_analysis_active' })
+    }
+    const query = parse(z.object({ model_id: z.string().trim().min(1).max(120).optional(), reasoning: z.enum(taskReasoningChoices).optional() }).strict(), request.query)
+    const textGenerationOptions = query.reasoning ? { reasoning: query.reasoning } : undefined
+    if (query.reasoning && !query.model_id) reject('选择推理等级时必须指定文本模型')
+    if (query.model_id) bindTaskReasoningById(query.model_id, textGenerationOptions)
     const file = await request.file({ limits: { fileSize: maxFileBytes, files: 1 } })
     if (!file) reject('请选择剧本文件')
     const filename = basename(file.filename || '').slice(0, 160)
@@ -309,7 +319,7 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
     // Same extracted text is the same manuscript, including a filename-only change.
     // Keep the effective revision, source identity, active run and durable checkpoints.
     if (previous?.content === content) {
-      if (query.model_id && !scriptSourceAnalysis(id)) analyzer.start(id, query.model_id, { explicitDispatch: true, extractionOnly: true })
+      if (query.model_id && !scriptSourceAnalysis(id)) analyzer.start(id, query.model_id, { explicitDispatch: true, extractionOnly: true, textGenerationOptions })
       return scriptSourceDocument(id)
     }
     const timestamp = new Date(Math.max(Date.now(), previous ? Date.parse(previous.updated_at) + 1 : 0, effective ? Date.parse(effective.updated_at) + 1 : 0)).toISOString()
@@ -332,7 +342,7 @@ export function registerScriptSourceRoutes(app: FastifyInstance, context: { gene
       }
       run('UPDATE projects SET updated_at=? WHERE id=?', timestamp, id)
     })()
-    if (query.model_id) analyzer.start(id, query.model_id, { explicitDispatch: true, extractionOnly: true })
+    if (query.model_id) analyzer.start(id, query.model_id, { explicitDispatch: true, extractionOnly: true, textGenerationOptions })
     return scriptSourceDocument(id)
   })
   app.delete('/api/projects/:id/script/source', async request => {

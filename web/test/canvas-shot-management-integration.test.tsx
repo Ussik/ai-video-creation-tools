@@ -197,7 +197,7 @@ test('a script request opens the project shot workspace once without planning or
   const server = mockApi(t), view = await mount(server)
   try {
     assert.ok(document.querySelector('.shot-manager-modal[data-full-screen]'))
-    assert.ok(document.querySelector('table[aria-label="分镜镜头表"]'))
+    assert.ok(document.querySelector('[role="list"][aria-label="分镜镜头列表"]'))
     assert.equal((document.querySelector('input[aria-label="分镜场次筛选"]') as HTMLInputElement).value, '第 1 集 · 月台告别')
     assert.ok(button('编辑镜头：旧方案回望'))
     assert.equal(server.requests.some(request => request.path.endsWith('/plan') || request.path.endsWith('/commit') || request.path.endsWith('/check')), false)
@@ -404,7 +404,7 @@ test('a project without script scenes plans a clip with fixed skills, saves inde
     assert.equal(document.querySelector('.clip-storyboard-planner'), null)
     assert.equal((document.querySelector('input[aria-label="分镜方案筛选"]') as HTMLInputElement).value, '片段方案 1')
     assert.ok(button('编辑镜头：片段进站')); assert.ok(button('编辑镜头：片段空月台'))
-    assert.match(document.querySelector('.shot-manager-table')!.textContent!, /片段内容/)
+    assert.match(document.querySelector('.shot-manager-grid')!.textContent!, /片段内容/)
     const commit = server.requests.find(request => request.path.endsWith('/storyboard/clip/commit'))!
     assert.equal(commit.body.source_text, clipSource); assert.equal(commit.body.total_duration, 12); assert.equal(commit.body.shots.length, 2)
     assert.equal(dom.window.sessionStorage.getItem(`script-canvas-open:${projectId}`), null)

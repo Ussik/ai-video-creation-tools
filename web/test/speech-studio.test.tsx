@@ -455,3 +455,35 @@ test('saving a new custom voice retains selection when its temporary id is repla
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="Speaker ID 2"]')!.value, 'custom-speaker')
   } finally { await view.destroy() }
 })
+
+test('page presentation keeps scene navigation and guards unsaved dialogue when leaving project tabs', async t => {
+  const requests: Array<{ path: string; method: string }> = []
+  const second = { ...line, id: 'second', position: 1, scene_id: 'other-scene', text: '第二场的台词。' }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ path: String(url), method: init?.method || 'GET' })
+    return Response.json(String(url).endsWith('/config') ? config : { voices: [voice], lines: [line, second] })
+  })
+  let guard: (() => Promise<boolean>) | null = null
+  const registerNavigationGuard = (value: typeof guard) => { guard = value }
+  const view = await mount(async () => {}, () => {}, { presentation: 'page', registerNavigationGuard,
+    scenes: [{ id: 'scene', heading: '场次一' }, { id: 'other-scene', heading: '场次二' }] as any })
+  try {
+    assert.ok(document.querySelector('.speech-studio-page'))
+    assert.equal(document.querySelector('.speech-studio.mantine-Modal-content'), null)
+    assert.equal(document.querySelectorAll('.speech-scene-rail button').length, 3)
+    await act(() => [...document.querySelectorAll<HTMLButtonElement>('.speech-scene-rail button')].find(node => node.textContent!.includes('场次二'))!.click())
+    assert.equal(document.querySelector<HTMLTextAreaElement>('[aria-label="朗读文本"]')!.value, second.text)
+    assert.equal(document.querySelectorAll('.speech-line-row').length, 1)
+    await fill('朗读文本', '第二场仍在编辑')
+    let pending!: Promise<boolean>
+    await act(() => { pending = guard!() })
+    await act(() => button('继续编辑').click())
+    assert.equal(await pending, false)
+    assert.equal(document.querySelector<HTMLTextAreaElement>('[aria-label="朗读文本"]')!.value, '第二场仍在编辑')
+    await act(() => { pending = guard!() })
+    await act(() => button('丢弃并离开').click())
+    assert.equal(await pending, true)
+    assert.deepEqual(requests.map(request => request.method), ['GET', 'GET'])
+  } finally { await view.destroy() }
+  assert.equal(guard, null)
+})

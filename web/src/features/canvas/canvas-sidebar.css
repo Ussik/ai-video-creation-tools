@@ -26,21 +26,17 @@
   border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--sidebar-muted); font-size: 12px;
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
 }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"] svg { flex: none; color: currentColor; }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs .mantine-Tabs-tabLabel {
-  flex: none; padding: 0; background: transparent; color: inherit; font-size: inherit; line-height: 1;
+  display: inline-flex; align-items: baseline; justify-content: center; gap: 6px; min-width: 0;
+  padding: 0; background: transparent; color: inherit; font-size: inherit; line-height: 1;
 }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs .mantine-Tabs-tabSection { flex: none; margin-inline: 0; }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs .pc-sidebar-tab-count {
-  min-width: 22px; height: 18px; padding: 0 4px; border: 0; border-radius: 5px;
-  background: var(--sidebar-hover); color: var(--sidebar-muted); font-size: 10px; font-variant-numeric: tabular-nums;
+  padding: 0; background: transparent; color: var(--sidebar-muted); font-size: 10px; font-variant-numeric: tabular-nums;
 }
 .project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"]:hover { background: var(--sidebar-hover); color: var(--sidebar-text); }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active {
+.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"][data-active] {
   border-color: transparent; background: var(--sidebar-raised); color: var(--fc-primary); box-shadow: none;
 }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active svg { color: currentColor; }
-.project-canvas aside.pc-canvas-sidebar .pc-sidebar-tabs button[role="tab"].active .pc-sidebar-tab-count { background: var(--sidebar-card); color: var(--sidebar-secondary); }
 .project-canvas aside.pc-canvas-sidebar .mantine-ActionIcon-root {
   flex: none; width: 28px; height: 28px; min-width: 28px; border: 0; border-radius: 8px;
   background: transparent; color: var(--sidebar-muted); transition: background 160ms ease, color 160ms ease;

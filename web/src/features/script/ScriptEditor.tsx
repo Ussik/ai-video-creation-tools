@@ -5,7 +5,7 @@ import type { Editor, JSONContent } from '@tiptap/core'
 import {
   ArrowLeft, ArrowRight, Bold, Clapperboard, FileText, Heading1, Italic,
   List, ListOrdered, LoaderCircle, Minimize2, Plus, Redo2, RotateCcw, Save, Sparkles,
-  ChevronDown, Search, Strikethrough, Trash2, Undo2, ZoomIn, ZoomOut,
+  ChevronDown, ChevronRight, MoreHorizontal, Search, Strikethrough, Trash2, Undo2, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Model, PlannedScene, PlannedShot, PlannedShotCreationResult, ProjectDetail, Provider, ScriptArtifactType, ScriptGenerationOptions, ShotPlanResult } from '../../shared/api/api'
@@ -15,6 +15,7 @@ import { maxScriptSceneDuration } from '@video-studio/shared/script/script-durat
 import './script-editor.css'
 import StoryboardPlanner from '../storyboard/StoryboardPlanner'
 import { useSharedModelSelection } from '../models/useSharedModelSelection'
+import { TaskReasoningSelect, useTaskReasoning } from '../models/TaskReasoningSelect'
 import { useAppDialog } from '../../shared/ui/AppDialog'
 import ThemeToggle from '../../shared/ui/ThemeToggle'
 import { applyTextFormat, type TextFormat } from '../../shared/lib/editor/text-editor'
@@ -187,9 +188,12 @@ export interface ScriptEditorProps {
   onOpenModels: () => void
   onOpenCanvas: () => void
   onOpenShotManager?: (sceneIds?: string[]) => void
+  onOpenSource?: () => void
   onNotice: (message: string) => void
   onDirtyChange?: (dirty: boolean) => void
   onSupplementStage?: (stage: Exclude<ScriptStage, 'episode'>) => void
+  registerNavigationGuard?: (guard: (() => Promise<boolean>) | null) => void
+  onOpenDirector?: () => void
 }
 
 function sceneFields(scene: Partial<SceneFields>): SceneFields {
@@ -256,7 +260,7 @@ function plannedSceneIssue(scene: PlannedScene): string | null {
   return null
 }
 
-function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onOpenShotManager, onNotice, onDirtyChange, onSupplementStage }: ScriptEditorProps) {
+function ScriptEditor({ detail, models, providers, busy = false, initialSection, onRefresh, onOpenModels, onOpenCanvas, onOpenShotManager, onOpenSource, onNotice, onDirtyChange, onSupplementStage, registerNavigationGuard, onOpenDirector }: ScriptEditorProps) {
   const { confirm, dialog } = useAppDialog()
   const [draft, setDraft] = useState<ScriptDraft>(() => fromDetail(detail))
   const [saved, setSaved] = useState<ScriptDraft>(() => fromDetail(detail))
@@ -351,6 +355,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const selectedScenes = draft.scenes.filter((scene) => scene.id && selectedSceneIds.includes(scene.id))
   const quickConvertScenes = selectedScenes.filter((scene) => !linkedSceneIds.has(scene.id!))
   const selectedPlanModelAvailable = availableModels.some((model) => model.id === planModelId)
+  const planReasoning = useTaskReasoning(availableModels.find(model => model.id === planModelId))
   const validShotsPerScene = Number.isInteger(Number(shotsPerScene)) && Number(shotsPerScene) >= 2 && Number(shotsPerScene) <= 5
   const shortScenes = selectedScenes.filter((scene) => scene.duration < Number(shotsPerScene))
   const planIssues = plannedScenes?.map(plannedSceneIssue) || []
@@ -413,6 +418,13 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   }, [showPlan, detail.id, selectedSceneIds.join(','), shotsPerScene, remoteSignature, planPromptRefresh])
 
   useEffect(() => { onDirtyChangeRef.current?.(hasUnsavedWork) }, [hasUnsavedWork])
+  useEffect(() => {
+    registerNavigationGuard?.(async () => {
+      if (disabled) { onNotice('请等待当前编辑操作完成'); return false }
+      return !hasUnsavedWork || await confirm({ title: '离开剧本编辑器？', message: '当前修改尚未保存。请先保存，或确认放弃本次手动修改。', confirmLabel: '放弃修改并离开', cancelLabel: '继续编辑' })
+    })
+    return () => registerNavigationGuard?.(null)
+  }, [registerNavigationGuard, disabled, hasUnsavedWork, confirm, onNotice])
   useEffect(() => () => { onDirtyChangeRef.current?.(false) }, [])
 
   useEffect(() => {
@@ -636,6 +648,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     try {
       const result = await api<ShotPlanResult>(`/projects/${detail.id}/script/plan-shots`, json('POST', {
         model_id: planModelId,
+        ...planReasoning.request,
         scene_ids: selectedScenes.map((scene) => scene.id),
         shots_per_scene: Number(shotsPerScene),
         prompt_override: planPrompt,
@@ -770,18 +783,19 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
 
   return <section className="script-page" aria-label="剧本创作">
     <header className="script-page-header script-editor-topbar">
+      <Select className="script-mobile-document-select" aria-label="切换剧本文档" value={activeDocumentSection} searchable allowDeselect={false}
+        data={[...editorDocumentGroups.map(group => ({ group: group.title, items: catalogForStage(group.stage).map(item => ({ value: item.type, label: item.title })) })),
+          { group: '分集剧本', items: [...(legacyScript ? [{ value: 'episode_script', label: scriptArtifactLabels.episode_script }] : []), ...episodeDocuments.map(artifact => ({ value: `episode-${artifact.episode_number}`, label: artifact.title }))] }]}
+        onChange={value => value && selectDocumentSection(value as DocumentSection, true)} />
       <div className="script-editor-titlebar">
         <ActionIcon type="button" className="script-editor-back" onClick={onOpenCanvas} aria-label="返回画布" title="返回画布" data-workspace-control=""><ArrowLeft size={17} /></ActionIcon>
         <div className="script-editor-document-title"><strong>编辑器 - {detail.name || '未命名项目'}</strong><span>{draft.scenes.length} 场 · {totalDuration} 秒</span></div>
         <span className={`script-save-state ${hasUnsavedWork ? 'is-dirty' : ''}`}><span />{dirty ? '未保存' : showPlan && plannedScenes ? '待创建' : '已保存'}</span>
       </div>
       <div className="script-editor-toolbar" aria-label="编辑工具">
+        {onOpenDirector && <Button variant="subtle" size="compact-xs" onClick={onOpenDirector}>导演对话</Button>}
         <ActionIcon type="button" aria-label="撤销" title="撤销" disabled={!canUndo || disabled} onClick={undoDraft} data-workspace-control=""><Undo2 size={16} /></ActionIcon>
         <ActionIcon type="button" aria-label="重做" title="重做" disabled={!canRedo || disabled} onClick={redoDraft} data-workspace-control=""><Redo2 size={16} /></ActionIcon>
-        <i />
-        <ActionIcon type="button" aria-label="缩小" title="缩小" onClick={() => setEditorZoom((value) => Math.max(80, value - 10))} disabled={editorZoom <= 80} data-workspace-control=""><ZoomOut size={16} /></ActionIcon>
-        <span className="script-editor-zoom">{editorZoom}%</span>
-        <ActionIcon type="button" aria-label="放大" title="放大" onClick={() => setEditorZoom((value) => Math.min(140, value + 10))} disabled={editorZoom >= 140} data-workspace-control=""><ZoomIn size={16} /></ActionIcon>
         <i />
         <div className="script-format-menu"><Menu opened={formatMenu === 'heading'} onChange={opened => setFormatMenu(opened ? 'heading' : null)} withinPortal={false} returnFocus={false} position="bottom-start">
           <Menu.Target><UnstyledButton type="button" aria-label="标题格式" title="标题格式" aria-haspopup="menu" aria-expanded={formatMenu === 'heading'} aria-pressed={formatMenu === 'heading' || focusedEditorIsActive('heading')} className={formatMenu === 'heading' || focusedEditorIsActive('heading') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => setFormatMenu((value) => value === 'heading' ? null : 'heading')}><Heading1 size={16} /><ChevronDown size={11} /></UnstyledButton></Menu.Target>
@@ -802,14 +816,25 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
         <i />
         <ActionIcon type="button" aria-label="粗体" title="粗体" aria-pressed={focusedEditorIsActive('bold')} className={focusedEditorIsActive('bold') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('bold')} data-workspace-control=""><Bold size={16} /></ActionIcon>
         <ActionIcon type="button" aria-label="斜体" title="斜体" aria-pressed={focusedEditorIsActive('italic')} className={focusedEditorIsActive('italic') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('italic')} data-workspace-control=""><Italic size={16} /></ActionIcon>
-        <ActionIcon type="button" aria-label="删除线" title="删除线" aria-pressed={focusedEditorIsActive('strike')} className={focusedEditorIsActive('strike') ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => formatFocusedText('strike')} data-workspace-control=""><Strikethrough size={16} /></ActionIcon>
+
       </div>
       <div className="script-page-actions">
-        <ActionIcon type="button" className={`script-editor-search-toggle ${search.opened ? 'is-active' : ''}`} aria-label="全文搜索" title="全文搜索（Ctrl/Cmd + F）" aria-expanded={search.opened} aria-controls="script-full-text-search" onClick={search.open} data-workspace-control=""><Search size={16} /></ActionIcon>
+        {!onOpenSource && <ActionIcon type="button" className="script-editor-search-toggle" aria-label="全文搜索" title="全文搜索（Ctrl/Cmd + F）"
+          onClick={search.open} data-workspace-control=""><Search size={16} /></ActionIcon>}
+        <Menu withinPortal position="bottom-end" width={180}>
+          <Menu.Target><ActionIcon type="button" variant="subtle" aria-label="更多编辑工具"><MoreHorizontal size={16} /></ActionIcon></Menu.Target>
+          <Menu.Dropdown>
+            {onOpenSource && <Menu.Item leftSection={<Search size={15} />} onClick={search.open}>全文搜索</Menu.Item>}
+            <Menu.Item leftSection={<Strikethrough size={15} />} onMouseDown={event => event.preventDefault()} onClick={() => formatFocusedText('strike')}>删除线</Menu.Item>
+            <Menu.Divider />
+            <Menu.Item leftSection={<ZoomOut size={15} />} disabled={editorZoom <= 80} onClick={() => setEditorZoom(value => Math.max(80, value - 10))}>缩小</Menu.Item>
+            <Menu.Item leftSection={<ZoomIn size={15} />} disabled={editorZoom >= 140} onClick={() => setEditorZoom(value => Math.min(140, value + 10))}>放大</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
         <Button className="script-canvas-action" variant="subtle" title="规划并保存分镜方案" leftSection={<Plus size={15} />} disabled={disabled || dirty || !productionSceneCandidates.length} onClick={() => { const ids = productionSceneCandidates.flatMap(scene => scene.id ? [scene.id] : []); if (onOpenShotManager) onOpenShotManager(ids); else { setPlanningSceneIds(ids); setStoryboardOpen(true) } }}>规划分镜</Button>
         <Button leftSection={working === 'save' ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} onClick={saveScript} disabled={!dirty || disabled}>保存</Button>
         <ActionIcon type="button" className="script-editor-exit" onClick={onOpenCanvas} aria-label="退出编辑器" title="退出编辑器" data-workspace-control=""><Minimize2 size={16} /></ActionIcon>
-        <ThemeToggle />
+        {!onOpenSource && <ThemeToggle />}
       </div>
       <ScriptDocumentSearch search={search} />
     </header>
@@ -818,11 +843,13 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
 
     <section className="script-document" aria-label="剧本文档">
       <aside className="script-document-nav" aria-label="剧本目录">
+        {onOpenSource && <><h2 className="script-document-nav-heading">剧本文档</h2><Button className="script-document-nav-primary script-document-nav-standalone" leftSection={<FileText size={15} />} onClick={onOpenSource} variant="subtle">原稿与分析</Button></>}
         {editorDocumentGroups.map(group => {
           const items = catalogForStage(group.stage)
+          const active = scriptStageForArtifact(activeDocumentSection) === group.stage
           return <div key={group.stage} className={items.length > 1 ? 'script-document-nav-feature' : undefined} data-script-stage={group.stage}>
-            <Button type="button" className={`script-document-nav-primary ${items.length === 1 ? 'script-document-nav-standalone' : ''} ${scriptStageForArtifact(activeDocumentSection) === group.stage ? 'is-active' : ''}`} onClick={() => selectDocumentSection(items[0]!.type, true)} data-workspace-control="" variant="subtle">{group.title}</Button>
-            {items.length > 1 && <div className="script-document-nav-nested">
+            <Button type="button" className={`script-document-nav-primary ${items.length === 1 ? 'script-document-nav-standalone' : ''} ${scriptStageForArtifact(activeDocumentSection) === group.stage ? 'is-active' : ''}`} onClick={() => selectDocumentSection(items[0]!.type, true)} data-workspace-control="" variant="subtle" rightSection={items.length > 1 ? active ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : undefined}>{group.title}</Button>
+            {items.length > 1 && (!onOpenSource || active) && <div className="script-document-nav-nested">
               {items.map(item => {
                 const missing = ![...draft.artifacts, ...pendingArtifacts].some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())
                 return <UnstyledButton type="button" key={item.type} className={`script-document-nav-item ${missing ? 'is-missing' : ''} ${activeDocumentSection === item.type ? 'is-active' : ''}`} title={missing ? `${item.title}（未生成）` : item.title} onClick={() => selectDocumentSection(item.type)}><span>{item.title}</span>{missing && <span className="script-document-missing-dot" aria-hidden="true" />}</UnstyledButton>
@@ -830,6 +857,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             </div>}
           </div>
         })}
+        {(legacyScript || episodeDocuments.length > 0) && <h3 className="script-document-episode-heading">分集剧本</h3>}
         {legacyScript && <Button type="button" className={`script-document-nav-primary script-document-nav-standalone ${activeDocumentSection === 'episode_script' ? 'is-active' : ''}`} onClick={() => selectDocumentSection('episode_script', true)} data-workspace-control="" variant="subtle">{scriptArtifactLabels.episode_script}</Button>}
         {episodeDocuments.map(artifact => <Button type="button" key={artifact.id} className={`script-document-nav-primary script-document-nav-standalone ${selectedEpisode?.id === artifact.id ? 'is-active' : ''}`} onClick={() => selectDocumentSection(`episode-${artifact.episode_number!}`)} data-workspace-control="" variant="subtle">{artifact.title}</Button>)}
       </aside>
@@ -846,9 +874,13 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
               && ((item.episode_number || 0) > 0 || item.content.trim()))
             const section: DocumentSection = selectedEpisode ? `episode-${selectedEpisode.episode_number!}` : 'episode_script'
             return <>
-            <header className="script-long-document-cover script-standalone-cover"><span className="script-kicker">分集剧本</span><h1>分集剧本</h1><p>{pending && !accepted ? '本集草稿已保存，确认后可编辑和制作分镜。' : selectedEpisode ? '只修改当前集，其他集和已保存资料保留。' : '已保存的剧本正文，支持手动修改。'}</p></header>
+            <header className="script-long-document-cover script-standalone-cover">
+              <span className="script-kicker">{selectedEpisode ? `分集剧本 / EPISODE ${String(artifact.episode_number).padStart(2, '0')}` : '分集剧本'}</span>
+              <h1>{onOpenSource && selectedEpisode ? artifact.title : '分集剧本'}</h1>
+              {pending && !accepted && <p>本集草稿已保存，确认后可编辑和制作分镜。</p>}
+            </header>
             <section id={`script-section-${section}`} data-script-section={section} className="script-long-section script-standalone-section">
-              <header className="script-long-section-heading"><div><h2>{artifact.title}</h2></div></header>
+              {(!onOpenSource || !selectedEpisode) && <header className="script-long-section-heading"><div><h2>{artifact.title}</h2></div></header>}
               {pending && renderGenerationDraft(pending)}
               {pending && accepted && <div className="script-confirmed-version-label">已确认版本</div>}
               {accepted && <RichArtifactEditor
@@ -909,7 +941,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     </section>
 
     <Modal opened={showConvert} onClose={() => !working && setShowConvert(false)} title={selectedEpisode ? `第 ${selectedEpisode.episode_number} 集 · 选择制作场次` : '选择制作场次'} classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
-      <div className="script-modal-stack">
+      <div className="script-modal-stack"><div className="script-modal-scroll">
         <p className="script-confirm-copy">完整剧本会保留。仅将选中的场次创建为镜头，不会调用生成模型；已有镜头不会重复创建。</p>
         <div className="script-scene-production-list">
           {productionSceneCandidates.map(scene => <label key={scene.clientId}>
@@ -919,15 +951,16 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
           </label>)}
         </div>
         <p className="script-confirm-copy">已选 {quickConvertScenes.length} 场 · {quickConvertScenes.reduce((sum, scene) => sum + scene.duration, 0)} 秒</p>
-        <div className="script-modal-actions"><Button variant="default" disabled={disabled} onClick={() => setShowConvert(false)}>取消</Button><Button loading={working === 'convert'} disabled={disabled || dirty || quickConvertScenes.length === 0} onClick={convertToShots} leftSection={<Clapperboard size={16} />}>确认创建</Button></div>
+        </div><div className="script-modal-actions"><Button variant="default" disabled={disabled} onClick={() => setShowConvert(false)}>取消</Button><Button loading={working === 'convert'} disabled={disabled || dirty || quickConvertScenes.length === 0} onClick={convertToShots} leftSection={<Clapperboard size={16} />}>确认创建</Button></div>
       </div>
     </Modal>
 
     <Modal opened={showPlan} onClose={() => void closePlan()} title="AI 拆分分镜" size="xl" closeOnEscape={!working} closeOnClickOutside={!working} classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
-      <div className="script-modal-stack">
+      <div className="script-modal-stack"><div className="script-modal-scroll">
         <p className="script-confirm-copy">将所选 {selectedScenes.length} 场规划为多个镜头。已有分镜的场次会追加新镜头，原有镜头和素材保持不变；新增镜头会增加项目总时长。</p>
         <div className="script-plan-settings">
           <Select label="文本模型" placeholder="选择已添加的模型" searchable allowDeselect={false} value={planModelId || null} disabled={disabled} data={availableModels.map((model) => ({ value: model.id, label: model.name }))} onChange={(value) => { if (value !== planModelId) void (async () => { if (await discardPlanPreview()) selectPlanModel(value || '') })() }} />
+          <TaskReasoningSelect reasoning={planReasoning} disabled={disabled} />
           <NumberInput label="每场目标镜头数" min={2} max={5} value={shotsPerScene} disabled={disabled} onChange={(value) => { if (value !== shotsPerScene) void (async () => { if (await discardPlanPreview()) setShotsPerScene(value) })() }} />
         </div>
         <div className="script-prompt-editor">
@@ -970,7 +1003,7 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
           const existingDuration = existingDurationByScene.get(scene.id!)
           return <div key={scene.id}><span>{String(index + 1).padStart(2, '0')}</span><strong>{scene.heading}</strong><small>{existingDuration === undefined ? `计划新增 ${scene.duration} 秒` : `已有 ${existingDuration} 秒 + 计划新增 ${scene.duration} 秒 = 合计 ${existingDuration + scene.duration} 秒`}</small></div>
         })}</div>}
-        <div className="script-modal-actions script-plan-actions">
+        </div><div className="script-modal-actions script-plan-actions">
           <Button variant="default" onClick={() => void closePlan()} disabled={disabled}>取消</Button>
           <Button variant={plannedScenes ? 'default' : 'filled'} leftSection={working === 'plan' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />} disabled={disabled || !selectedPlanModelAvailable || !validShotsPerScene || !planPrompt.trim() || (!planPromptCustomized && (planPromptLoading || !!planPromptError)) || selectedScenes.length > 10} onClick={generateShotPlan}>{plannedScenes ? '重新规划' : '生成预览'}</Button>
           {plannedScenes && <Button leftSection={working === 'create-plan' ? <LoaderCircle size={16} className="spin" /> : <Clapperboard size={16} />} disabled={disabled || !planReady} onClick={createPlannedShots}>创建 {plannedScenes.reduce((sum, scene) => sum + scene.shots.length, 0)} 个分镜</Button>}
@@ -979,9 +1012,9 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
     </Modal>
 
     <Modal opened={!!sceneForDeletion} onClose={() => setDeleteSceneId(null)} title="删除场次" classNames={{ content: 'script-modal-content', body: 'script-modal-body' }}>
-      {sceneForDeletion && <div className="script-modal-stack"><p className="script-confirm-copy">删除「{sceneForDeletion.heading || '未命名场次'}」？保存剧本后才会移除该场次。已制作的镜头和素材会保留，但镜头会失去与该场次的关联。</p><div className="script-modal-actions"><Button variant="default" onClick={() => setDeleteSceneId(null)}>取消</Button><Button className="script-danger-button" color="red" onClick={() => removeScene(sceneForDeletion.clientId)} leftSection={<Trash2 size={16} />}>删除场次</Button></div></div>}
+      {sceneForDeletion && <div className="script-modal-stack"><div className="script-modal-scroll"><p className="script-confirm-copy">删除「{sceneForDeletion.heading || '未命名场次'}」？保存剧本后才会移除该场次。已制作的镜头和素材会保留，但镜头会失去与该场次的关联。</p></div><div className="script-modal-actions"><Button variant="default" onClick={() => setDeleteSceneId(null)}>取消</Button><Button className="script-danger-button" color="red" onClick={() => removeScene(sceneForDeletion.clientId)} leftSection={<Trash2 size={16} />}>删除场次</Button></div></div>}
     </Modal>
-    <StoryboardPlanner intent="plan" opened={storyboardOpen} onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
+    <StoryboardPlanner intent="plan" opened={storyboardOpen} presentation={onOpenSource ? 'page' : 'modal'} returnLabel="返回剧本" onClose={() => setStoryboardOpen(false)} detail={detail} models={availableModels} initialSceneIds={planningSceneIds}
       onRefresh={onRefresh} onOpenCanvas={onOpenCanvas} onNotice={onNotice} />
     {dialog}
   </section>

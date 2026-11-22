@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { Alert, Button, Checkbox, Group, Modal, Stack, Text, Textarea } from '@mantine/core'
 import { handoffCountChoice, type HandoffConflict, type HandoffSourceEdit } from '@video-studio/shared/media/video-handoff-conflict'
 
+import './canvas-decision-dialogs.css'
+
 export default function CanvasVideoConflictDialog({ conflict, onClose, onApply, busy }: {
   conflict: HandoffConflict; onClose: () => void; onApply: (edit: HandoffSourceEdit) => Promise<void>; busy: boolean
 }) {
@@ -13,8 +15,8 @@ export default function CanvasVideoConflictDialog({ conflict, onClose, onApply, 
   }), [conflict])
   const changed = JSON.stringify(edit) !== JSON.stringify({ video_prompt: conflict.sources.video_prompt, audio_plan: conflict.sources.audio_plan })
   const update = (value: HandoffSourceEdit) => { setEdit(value); setPreview(false); setConfirmed(false) }
-  return <Modal opened onClose={() => { if (!busy) onClose() }} title="确认动作与声音冲突" size="xl" closeOnClickOutside={!busy} closeOnEscape={!busy}>
-    <Stack gap="sm">
+  return <Modal opened onClose={() => { if (!busy) onClose() }} title="确认动作与声音冲突" size="xl" closeOnClickOutside={!busy} closeOnEscape={!busy} closeButtonProps={{ disabled: busy }} className="pc-video-conflict-modal">
+    <div className="pc-decision-dialog-scroll"><Stack gap="sm">
       <Alert color="orange">这份候选已保留。先统一本镜的动作与音效，再预览采用；不会再次调用模型。</Alert>
       {conflict.conflicts.map((issue, index) => <div key={index}>
         <Text fw={600}>{issue.message}</Text><Text size="sm">{issue.suggestion}</Text>
@@ -27,10 +29,10 @@ export default function CanvasVideoConflictDialog({ conflict, onClose, onApply, 
       {preview && <><Alert color="blue">将同时保存以上动作与事件音效，并继续承接视频。台词、共同声场、图片、引用和当前视频草稿均保留。请核对次数、持续时间与先后关系。</Alert>
         <Checkbox checked={confirmed} onChange={event => setConfirmed(event.currentTarget.checked)} label="我已确认动作次数、时序和音效一致，并采用此修正" /></>}
       {error && <Alert color="red">{error}</Alert>}
-      <Group justify="flex-end"><Button variant="subtle" onClick={onClose} disabled={busy}>保留待确认</Button>
+    </Stack></div>
+      <footer className="pc-decision-dialog-actions"><Group justify="flex-end"><Button variant="subtle" onClick={onClose} disabled={busy}>保留待确认</Button>
         {preview ? <Button disabled={!confirmed || busy} loading={busy} onClick={() => { setError(''); void onApply(edit).catch(error => setError(error instanceof Error ? error.message : String(error))) }}>采用修正并继续</Button>
           : <Button disabled={!changed || !edit.video_prompt.trim() || busy || edit.audio_plan?.sound_effects.some(effect => !effect.trim())} onClick={() => setPreview(true)}>预览修正</Button>}
-      </Group>
-    </Stack>
+      </Group> </footer>
   </Modal>
 }

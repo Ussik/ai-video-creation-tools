@@ -5,6 +5,43 @@
   padding: 0 12px;
 }
 
+/* Studio actions share one material while explicit semantic colors stay intact. */
+.mantine-Button-root.app-button-studio:is([data-variant='filled'], :not([data-variant])):not(:disabled):not([data-disabled]) {
+  border-color: var(--fc-action-border);
+  background: var(--fc-action-gradient);
+  color: var(--fc-on-action);
+  box-shadow: var(--fc-action-shadow);
+}
+
+.mantine-Button-root.app-button-studio:is([data-variant='filled'], :not([data-variant])):hover:not(:disabled):not([data-disabled]):not([data-loading]) {
+  border-color: var(--fc-action-border-hover);
+  background: var(--fc-action-gradient-hover);
+}
+
+.app-button:is(:disabled, [data-disabled]),
+.app-action-icon:is(:disabled, [data-disabled]) {
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.app-button:active:not(:disabled):not([data-disabled]):not([data-loading]) {
+  translate: 0 1px;
+}
+
+.app-button:focus-visible,
+.app-action-icon:focus-visible {
+  outline: 2px solid var(--fc-focus);
+  outline-offset: 3px;
+}
+
+.mantine-Input-input:not(:focus):not([data-expanded]):not([data-error]) {
+  box-shadow: var(--fc-control-recess);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-button:active:not(:disabled):not([data-disabled]):not([data-loading]) { translate: none; }
+}
+
 .reference-upload {
   justify-self: start;
 }

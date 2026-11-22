@@ -1,4 +1,5 @@
 import { structuredStrategySources, type TextStructuredObservation } from '@video-studio/shared/models/text-observation'
+import { taskReasoningChoices } from '@video-studio/shared/models/task-reasoning'
 import { z } from 'zod'
 import { stageOperations } from '@video-studio/shared/script/script-stage-access'
 import { newId } from '../../infrastructure/database/db.js'
@@ -74,6 +75,9 @@ export const scriptActivitySchema = z.object({
   budget_mode: z.enum(['shared', 'separate', 'unknown']).optional(),
   input_count_method: z.enum(['estimate', 'provider', 'estimated_fallback']).optional(),
   capacity_status: z.enum(['validated', 'estimated', 'partial', 'unknown']).optional(),
+  reasoning_requested: z.enum(taskReasoningChoices).optional(),
+  reasoning_effective: z.enum([...taskReasoningChoices, 'configured', 'upstream']).optional(),
+  reasoning_source: z.enum(['task', 'model_default', 'upstream', 'policy']).optional(),
   output_source: z.enum(['auto', 'fixed', 'upstream', 'template', 'reserve']).optional(),
   capability_source: z.enum(['override', 'provider', 'legacy', 'unknown']).optional(),
   cache_read_tokens: z.number().int().min(0).optional(), cache_write_tokens: z.number().int().min(0).optional(),

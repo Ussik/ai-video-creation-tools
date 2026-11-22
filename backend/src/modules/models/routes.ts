@@ -9,6 +9,7 @@ import { checkBaseUrl, checkProtocol, validateSettings } from './validation.js'
 import { nextModelOrder, saveProviderConfiguration } from './provider-configuration.js'
 import { modelConfigurationInUse, providerConfigurationInUse } from './model-configuration-usage.js'
 import { modelStepSignal } from '../generation/model-execution.js'
+import { availableTaskReasoning } from '../../infrastructure/providers/task-reasoning.js'
 
 export function registerModelRoutes(app: FastifyInstance) {
   app.get('/api/providers', async () => all<Provider>("SELECT * FROM providers WHERE adapter <> 'demo' AND archived=0 ORDER BY name").map(providerPublic))
@@ -108,7 +109,10 @@ export function registerModelRoutes(app: FastifyInstance) {
     run('DELETE FROM providers WHERE id=?', id)
     return { ok: true }
   })
-  app.get('/api/models', async () => all<Model>("SELECT models.* FROM models JOIN providers ON providers.id=models.provider_id WHERE providers.adapter <> 'demo' AND providers.archived=0 AND models.archived=0 ORDER BY models.sort_order, models.modality, models.name, models.id").map(modelPublic))
+  app.get('/api/models', async () => all<Model & { provider_base_url: string }>("SELECT models.*, providers.base_url AS provider_base_url FROM models JOIN providers ON providers.id=models.provider_id WHERE providers.adapter <> 'demo' AND providers.archived=0 AND models.archived=0 ORDER BY models.sort_order, models.modality, models.name, models.id")
+    .map(({ provider_base_url, ...model }) => ({ ...modelPublic(model), ...(model.modality === 'text' ? {
+      task_reasoning_options: availableTaskReasoning(model, { base_url: provider_base_url }),
+    } : {}) })))
   app.put('/api/models/:id/default', async request => {
     const { id } = parse(idParams, request.params)
     const model = required<Model>('models', id)

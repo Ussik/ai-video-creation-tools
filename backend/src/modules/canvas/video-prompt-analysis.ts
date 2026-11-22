@@ -1,3 +1,4 @@
+import { bindTaskReasoning, textGenerationOptionsInput } from '../../infrastructure/providers/task-reasoning.js'
 import { createHash } from 'node:crypto'
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import { runIsolatedModelGraph } from '../generation/isolated-model-graph.js'
@@ -24,7 +25,7 @@ const time = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 const prose = z.string().trim().min(1).max(4000)
 const uncertainties = z.array(z.string().trim().min(1).max(1000)).max(16)
 export const videoPromptAnalysisInputSchema = z.object({
-  model_id: id, asset_id: id, instructions: z.string().trim().max(4000).default(''),
+  model_id: id, asset_id: id, text_generation_options: textGenerationOptionsInput, instructions: z.string().trim().max(4000).default(''),
   start_ms: time.default(0), end_ms: time.nullable().optional(), fps: z.number().min(0.2).max(5).default(2),
 }).strict()
 export const videoPromptAnalysisShotSchema = z.object({
@@ -115,6 +116,7 @@ export function registerVideoPromptAnalysisRoutes(app: FastifyInstance, dependen
     const model = required<Model>('models', input.model_id), provider = required<Provider>('providers', model.provider_id)
     if (!model.enabled || model.archived || !provider.enabled || provider.archived || provider.adapter !== 'http') fail('请选择已启用且提供商可用的豆包视频理解模型')
     if (!supportsDoubaoVideoAnalysis(model)) fail('请在文本模型设置中开启视频理解，并选择“豆包视频理解”输入格式')
+    const withReasoning = bindTaskReasoning(model, provider, input.text_generation_options)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(new Error('视频反推超时，请缩小分析范围后重试')), 300_000)
     timeout.unref()
@@ -128,12 +130,13 @@ export function registerVideoPromptAnalysisRoutes(app: FastifyInstance, dependen
       const video = await (dependencies.prepare ?? prepareVideoAnalysis)(location, range.start_ms, range.end_ms, input.fps, controller.signal)
       const selectedDuration = range.end_ms - range.start_ms
       if (video.duration_ms !== selectedDuration || video.fps !== input.fps) fail('视频预处理结果与所选范围不一致', 502)
-      const identity = { version: 1, source: signature, range, fps: input.fps, instructions: input.instructions, model: creativeModelIdentity(model.id) }
+      const identity = { version: 1, source: signature, range, fps: input.fps, instructions: input.instructions, model: creativeModelIdentity(model.id),
+        ...(input.text_generation_options?.reasoning ? { reasoning: input.text_generation_options.reasoning } : {}) }
       return await withModelAdmission(`creative:video-analysis:${projectId}:${asset.id}:${range.start_ms}:${range.end_ms}`, controller.signal, async () => {
         const steps = creativeGenerationSteps(projectId, `video-analysis:${asset.id}:${range.start_ms}:${range.end_ms}`, identity, controller.signal)
         const prompt = videoPromptAnalysisInstructions(selectedDuration, input.fps, input.instructions)
         let operationSignal = controller.signal
-        const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => generate(model, provider, { prompt, video, structured_output: contract }, operationSignal)
+        const requestModel = (prompt: string, contract?: import('../generation/model-output.js').OutputContract) => withReasoning(() => generate(model, provider, { prompt, video, structured_output: contract }, operationSignal))
         let content!: Content
         // Media preparation has its own deadline. Multi-shot inference uses a
         // size-scaled durable execution clock rather than a five-minute total.

@@ -1,3 +1,4 @@
+import type { TextGenerationOptions } from '@video-studio/shared/models/task-reasoning'
 import CanvasVideoConflictDialog from './CanvasVideoConflictDialog'
 import type { HandoffSourceEdit } from '@video-studio/shared/media/video-handoff-conflict'
 import type { ApiError } from '../../shared/api/api'
@@ -5,9 +6,9 @@ import { recoverCanvasShotPrompts } from './canvas-shot-prompt-recovery'
 import { WorkspaceDisclosure } from '../../shared/ui/WorkspaceDisclosure'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Tabs, FileButton, UnstyledButton,
-  ActionIcon, Badge, Button, Checkbox, Drawer, Menu, Modal, Popover, Text, TextInput, Tooltip,
+  ActionIcon, Button, Checkbox, Drawer, Menu, Modal, Popover, Text, TextInput, Tooltip,
 } from '@mantine/core'
-import { useClickOutside } from '@mantine/hooks'
+import { useClickOutside, useMediaQuery } from '@mantine/hooks'
 import {
   ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, CircleAlert, ClipboardPaste, Clock3, Copy, FileText, Film, FolderOpen,
   Image as ImageIcon, ScanEye, Info, LayoutGrid, Layers3, LoaderCircle, LocateFixed, Map as MapIcon, Maximize2, Minimize2, MoreHorizontal, MousePointer2,
@@ -361,9 +362,16 @@ export interface ProjectCanvasProps {
   onRefresh: () => Promise<void>
   onRenameProject?: (name: string) => Promise<boolean>
   onOpenModels: () => void
-  onNavigate: (destination: 'projects' | 'studio' | 'assets' | 'jobs' | 'models') => void
+  onNavigate: (destination: 'projects' | 'canvas' | 'studio' | 'assets' | 'jobs' | 'models') => void
   onOpenScriptCreator: () => void
   onOpenSpeech?: () => void
+  workspace?: 'canvas' | 'shots'
+  projectHeader?: boolean
+  shotHeaderControls?: React.ReactNode
+  onCloseShotWorkspace?: () => void
+  onOpenShotWorkspace?: () => void
+  onOpenVisualWorkspace?: () => void
+  registerNavigationGuard?: (guard: (() => Promise<boolean>) | null) => void
   onOpenScriptDocument?: (artifact: ScriptArtifact) => void
   onOpenScriptDirector?: (focusArtifact?: ScriptAction, context?: string, source?: CanvasNodeProposalSource) => void
   registerNodeProposalActions?: (actions: CanvasNodeProposalActions | null) => void
@@ -873,7 +881,7 @@ const MemoStudioNode = memo(StudioNode, (previous, next) => {
 })
 const nodeTypes = { studio: MemoStudioNode }
 
-function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProject, onNavigate, onOpenModels, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, registerNodeProposalActions, initialLocation, shotManagementRequest, onShotManagementRequestHandled, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport, optimizedPromptDraft, onOptimizedPromptDraftApplied }: CanvasInstanceProps) {
+function ProjectCanvasInner({ workspace = 'canvas', projectHeader, shotHeaderControls, onCloseShotWorkspace, onOpenShotWorkspace, onOpenVisualWorkspace, registerNavigationGuard, detail, models, providers, onRefresh, onRenameProject, onNavigate, onOpenModels, onOpenScriptCreator, onOpenScriptDocument, onOpenSpeech, onOpenScriptDirector: onOpenDirectorPanel, registerNodeProposalActions, initialLocation, shotManagementRequest, onShotManagementRequestHandled, onLocationChange, canvas, canvasSession, canvasMenu, registerCanvasActions, onCanvasViewport, optimizedPromptDraft, onOptimizedPromptDraftApplied }: CanvasInstanceProps) {
   const allShots = useMemo(() => allProjectShots(detail), [detail.shots, detail.historical_shots])
   const canvasShots = useMemo(() => canvasDesignShots(detail, canvas.design_id), [allShots, canvas.design_id])
   const browsingDetail = useMemo(() => ({ ...detail, shots: allShots }), [detail, allShots])
@@ -885,6 +893,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   const [viewMode, setViewMode] = useState<CanvasView>(initialLocation?.view || 'canvas')
   // Liblib-style left rail: it keeps the canvas graph discoverable while node
   // content and generation settings stay in the canvas itself.
+  const wideCanvas = useMediaQuery('(min-width: 1101px)', false, { getInitialValueInEffect: false })
+  const dockComposer = Boolean(projectHeader && wideCanvas)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarTab, setSidebarTab] = useState<'canvas' | 'assets' | 'profiles'>('canvas')
   const [profileSearch, setProfileSearch] = useState('')
@@ -1337,7 +1347,9 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           else keepDraft(queue)
           if (queueRef.current === queue) {
             setGraph(queue.graph)
-            setSaveState(queue.savedSerial === queue.serial ? 'saved' : 'pending')
+            const fullySaved = queue.savedSerial === queue.serial
+            setSaveState(fullySaved ? 'saved' : 'pending')
+            if (fullySaved) setNoticeState(current => current ?? { message: '画布已保存' })
           }
         } catch (error) {
           if (error instanceof CanvasConflictError) {
@@ -2034,6 +2046,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
   }, [graph?.edges, automaticReferenceEdges, automaticReferenceEdgeIds, selectedEdgeId, selectedIds, showEdges, visibleNodeIds])
   useLayoutEffect(() => { flowEdgesRef.current = flowEdges }, [flowEdges])
   const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId)
+  const composerPreviewAsset = dockComposer ? assetMap.get(selectedNode?.asset_id || '') : undefined
   const selectedHandoffState = useMemo(() => {
     if (!graph || !selectedNode) return {}
     try { return { pending: pendingImageVideoHandoff(graph, selectedNode, detail, models) } }
@@ -2686,7 +2699,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     }
   }
 
-  async function analyzeCanvasImage(nodeId: string) {
+  async function analyzeCanvasImage(nodeId: string, textGenerationOptions?: TextGenerationOptions) {
     if (analysisRequestRef.current) return
     const current = queueRef.current?.graph, node = current?.nodes.find(node => node.id === nodeId)
     if (!current || node?.type !== 'image_analysis') return
@@ -2702,7 +2715,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     const timeout = window.setTimeout(() => request.controller.abort(new Error('图片反推超时，请重试或切换支持看图的模型')), 300_000)
     try {
       const value = await api<{ prompt: string; asset_id: string; model_id: string }>(`/projects/${detail.id}/canvas/image-prompt-analysis`, {
-        ...json('POST', { asset_id: sourceAssetId, model_id: model.id, instructions }), signal: request.controller.signal,
+        ...json('POST', { asset_id: sourceAssetId, model_id: model.id, text_generation_options: textGenerationOptions, instructions }), signal: request.controller.signal,
       })
       if (analysisRequestRef.current !== request || request.controller.signal.aborted) return
       if (!value.prompt?.trim() || value.asset_id !== sourceAssetId || value.model_id !== model.id) throw new Error('反推结果与当前图片或模型不匹配，请重试')
@@ -3316,6 +3329,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     setShotManagerScenes(sceneIds || [])
     setShotManagerDesign(sceneIds ? '__all__' : undefined)
     setShotManagerOpen(true)
+    if (workspace !== 'shots') onOpenShotWorkspace?.()
   }
 
   useEffect(() => {
@@ -4547,6 +4561,8 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (queue.serial) { keepDraft(queue); scheduleSave(queue) }
   }
 
+  const shotWorkspaceGuard = useRef<(() => Promise<boolean>) | null>(null)
+  const setShotWorkspaceGuard = useCallback((guard: (() => Promise<boolean>) | null) => { shotWorkspaceGuard.current = guard }, [])
   const canvasLeaveRef = useRef<CanvasActions | null>(null)
   canvasLeaveRef.current = {
     revision: () => queueRef.current?.base.revision,
@@ -4582,6 +4598,15 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     registerCanvasActions({ revision: () => canvasLeaveRef.current!.revision(), leave: () => canvasLeaveRef.current!.leave(), move: target => canvasLeaveRef.current!.move(target) })
     return () => registerCanvasActions(null)
   }, [registerCanvasActions])
+
+  useEffect(() => {
+    registerNavigationGuard?.(async () => {
+      if (workspace === 'shots' && shotWorkspaceGuard.current && !await shotWorkspaceGuard.current()) return false
+      if (productionRequestRef.current || planningSceneIds !== null || clipPlanningOpen) { setNotice('请先完成或关闭当前分镜操作'); return false }
+      return await canvasLeaveRef.current?.leave() ?? false
+    })
+    return () => registerNavigationGuard?.(null)
+  }, [registerNavigationGuard, workspace, planningSceneIds, clipPlanningOpen])
 
   const sidebarNodes = useMemo(() => {
     const query = sidebarSearch.trim().toLocaleLowerCase()
@@ -4640,7 +4665,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     if (referenceTargetNodeId && selectedNodeId !== referenceTargetNodeId) setReferenceTargetNodeId(null)
   }, [selectedNodeId, referenceTargetNodeId])
 
-  return <div className="project-canvas"
+  return <div className={`project-canvas${workspace === 'shots' ? ' is-shot-workspace' : ''}`}
     onCopy={event => {
       if (viewMode !== 'canvas' || isCanvasEditingTarget(event.target) || !selectedNode || selectedNode.type === 'project_script_ref'
         || !(event.target instanceof Element) || !event.target.closest('.pc-flow')
@@ -4717,6 +4742,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
     <FileButton ref={referenceUploadInputRef} accept="image/png,image/jpeg,image/webp" multiple onChange={files => { if (files.length && referenceUploadTargetId) void uploadCanvasFiles(files) }}>{() => null}</FileButton>
     <div className={`pc-toolbar ${viewMode === 'storyboard' ? 'pc-toolbar-storyboard' : ''}`}>
       <div className="pc-canvas-nav">
+        {!projectHeader && <>
         <Tooltip label="项目"><ActionIcon variant="subtle" aria-label="返回项目" onClick={() => onNavigate('projects')}><FolderOpen size={18} /></ActionIcon></Tooltip>
         {projectNameEditing
           ? <TextInput ref={projectNameInputRef} className="pc-project-name-input" aria-label="编辑项目名称" value={projectNameDraft}
@@ -4730,10 +4756,11 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <Menu shadow="md" width={172} position="bottom-start"><Menu.Target><ActionIcon variant="subtle" aria-label="切换创作页面"><ChevronDown size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
           <Menu.Item leftSection={<ScrollText size={15} />} onClick={() => openScriptDirector('all')}>剧本创作</Menu.Item>
           <Menu.Item leftSection={<Layers3 size={15} />} onClick={() => void openShotManager()}>分镜管理</Menu.Item>
-          <Menu.Item leftSection={<ImageIcon size={15} />} onClick={openProfileSidebar}>视觉设定</Menu.Item>
+          <Menu.Item leftSection={<ImageIcon size={15} />} onClick={() => onOpenVisualWorkspace ? onOpenVisualWorkspace() : openProfileSidebar()}>视觉设定</Menu.Item>
           {onOpenSpeech && <Menu.Item leftSection={<Mic2 size={15} />} onClick={onOpenSpeech}>配音</Menu.Item>}
           <Menu.Item leftSection={<Film size={15} />} onClick={() => onNavigate('studio')}>成片工作台</Menu.Item>
         </Menu.Dropdown></Menu>
+        </>}
         {canvasMenu}
         {viewMode === 'canvas' && <Tooltip label="粘贴节点（Ctrl/Cmd+V）"><ActionIcon variant="subtle" aria-label="粘贴节点" disabled={!graph}
           onClick={() => void pasteNodeFromClipboard()}><ClipboardPaste size={16} /></ActionIcon></Tooltip>}
@@ -4744,11 +4771,10 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         <Tabs.Tab type="button"   className={viewMode === 'storyboard' ? 'is-active' : ''}
           disabled={visualPanelBusy} onClick={() => { void (async () => { if (!await leaveVisualPanel()) return; setProfileInspectorId(null); setVisualTool(null); setProfileDraftDirty(false); setContextMenu(null); setAddMenu(null); setViewMode('storyboard') })() }} value={'storyboard'}><LayoutGrid size={15} />故事板</Tabs.Tab>
       </Tabs.List></Tabs>
-      <div className="pc-save-status" role="status">
-        {saveState === 'saved' ? <><Check size={14} />已保存</>
-          : saveState === 'saving' || saveState === 'pending' ? <><LoaderCircle size={14} className="pc-spin" />{saveState === 'saving' ? '保存中' : '待保存'}</>
-            : <Button onClick={() => saveState === 'conflict' ? void inspectConflict() : queueRef.current && void flush(queueRef.current).catch(showError)} data-workspace-control="" variant="subtle"><CircleAlert size={14} />{saveState === 'conflict' ? '版本冲突 · 合并' : '保存失败 · 重试'}</Button>}
-      </div>
+      {saveState !== 'saved' && <div className="pc-save-status" role="status">
+        {saveState === 'saving' || saveState === 'pending' ? <><LoaderCircle size={14} className="pc-spin" />{saveState === 'saving' ? '保存中' : '待保存'}</>
+          : <Button onClick={() => saveState === 'conflict' ? void inspectConflict() : queueRef.current && void flush(queueRef.current).catch(showError)} data-workspace-control="" variant="subtle"><CircleAlert size={14} />{saveState === 'conflict' ? '版本冲突 · 合并' : '保存失败 · 重试'}</Button>}
+      </div>}
       {viewMode === 'storyboard' && graph && <div className="pc-storyboard-tools">
         <TextInput className="pc-storyboard-search" aria-label="搜索故事板内容" placeholder="搜索文本、镜头或素材"
           leftSection={<Search size={16} />} leftSectionPointerEvents="none"
@@ -4756,20 +4782,32 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           value={storyboardQuery} onChange={event => setStoryboardQuery(event.currentTarget.value)} />
         <Button className="pc-storyboard-director-button" type="button" onClick={() => openScriptDirector('all')} data-workspace-control="" variant="default" leftSection={<ScrollText size={15} />}>导演对话</Button>
       </div>}
-      <div className="pc-theme-control"><ThemeToggle /></div>
+      {!projectHeader && <div className="pc-theme-control"><ThemeToggle /></div>}
     </div>
     <div className={`pc-body ${viewMode === 'storyboard' ? 'pc-body-storyboard' : sidebarOpen ? 'pc-body-sidebar-open' : ''}`}>
+      {viewMode === 'canvas' && <Tooltip label={sidebarOpen ? '收起节点列表' : '打开节点列表'}>
+        <ActionIcon variant="subtle" className="pc-node-list-toggle" aria-expanded={sidebarOpen} data-canvas-overlay
+          aria-label={sidebarOpen ? '收起左侧节点列表' : '打开左侧节点列表'} onClick={() => setSidebarOpen(open => !open)}>
+          {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        </ActionIcon>
+      </Tooltip>}
       {viewMode === 'canvas' && sidebarOpen && <aside className="pc-canvas-sidebar" aria-label="画布节点与素材" data-canvas-overlay>
         <Tabs value={sidebarTab} variant="pills" activateTabWithKeyboard={false} className="pc-sidebar-tabs-root"><Tabs.List className="pc-sidebar-tabs" aria-label="画布侧栏">
-          <Tooltip label="当前画布的节点总数，包含项目剧本" openDelay={300}><Tabs.Tab type="button" className={sidebarTab === 'canvas' ? 'active' : ''}
-            onClick={() => setSidebarTab('canvas')} value="canvas" leftSection={<Layers3 size={15} />}
-            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{graph?.nodes.length || 0}</Badge>}>画布</Tabs.Tab></Tooltip>
-          <Tooltip label={referenceTargetNodeId ? '项目内可引用的素材，包含未保存候选' : '项目共享的已保存素材，不含成片导出'} openDelay={300}><Tabs.Tab type="button" className={sidebarTab === 'assets' ? 'active' : ''}
-            onClick={() => setSidebarTab('assets')} value="assets" leftSection={<ImageIcon size={15} />}
-            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{availableSidebarAssets.length}</Badge>}>资产</Tabs.Tab></Tooltip>
-          <Tooltip label={profileScope === 'all' ? '整个项目全部方案的设定总数，包含历史方案' : '当前方案的设定总数，不同状态分别计数'} openDelay={300}><Tabs.Tab type="button" className={sidebarTab === 'profiles' ? 'active' : ''}
-            onClick={() => setSidebarTab('profiles')} value="profiles" leftSection={<LayoutDashboard size={15} />}
-            rightSection={<Badge className="pc-sidebar-tab-count" color="gray" size="xs">{scopedSidebarProfiles.length}</Badge>}>设定</Tabs.Tab></Tooltip>
+          <Tooltip label="当前画布的节点总数，包含项目剧本" position="right" openDelay={500}>
+            <Tabs.Tab type="button" onClick={() => setSidebarTab('canvas')} value="canvas">
+              画布<span className="pc-sidebar-tab-count">{graph?.nodes.length || 0}</span>
+            </Tabs.Tab>
+          </Tooltip>
+          <Tooltip label={referenceTargetNodeId ? '项目内可引用的素材，包含未保存候选' : '项目共享的已保存素材，不含成片导出'} position="right" openDelay={500}>
+            <Tabs.Tab type="button" onClick={() => setSidebarTab('assets')} value="assets">
+              资产<span className="pc-sidebar-tab-count">{availableSidebarAssets.length}</span>
+            </Tabs.Tab>
+          </Tooltip>
+          <Tooltip label={profileScope === 'all' ? '整个项目全部方案的设定总数，包含历史方案' : '当前方案的设定总数，不同状态分别计数'} position="right" openDelay={500}>
+            <Tabs.Tab type="button" onClick={() => setSidebarTab('profiles')} value="profiles">
+              设定<span className="pc-sidebar-tab-count">{scopedSidebarProfiles.length}</span>
+            </Tabs.Tab>
+          </Tooltip>
         </Tabs.List></Tabs>
         {sidebarTab === 'canvas' ? <>
           <div className="pc-sidebar-tools">
@@ -4811,7 +4849,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               <div className="pc-sidebar-profile-tools">
                 <Tooltip label="新增设定"><ActionIcon variant="subtle" aria-label="新增视觉设定" disabled={visualPanelBusy} onClick={() => void openVisualTool('create')}><Plus size={15} /></ActionIcon></Tooltip>
                 <Menu position="bottom-end" width={180} classNames={{ dropdown: 'pc-sidebar-dropdown' }}><Menu.Target><ActionIcon variant="subtle" aria-label="设定工具" title="批量整理与引用管理" disabled={visualPanelBusy}><MoreHorizontal size={16} /></ActionIcon></Menu.Target><Menu.Dropdown>
-                  <Menu.Item leftSection={<WandSparkles size={14} />} onClick={() => void openVisualTool('organize')}>批量整理草稿</Menu.Item>
+                  <Menu.Item leftSection={<WandSparkles size={14} />} onClick={() => onOpenVisualWorkspace ? onOpenVisualWorkspace() : void openVisualTool('organize')}>批量整理草稿</Menu.Item>
                   <Menu.Item leftSection={<Layers3 size={14} />} onClick={() => void openVisualTool('bindings', { target: selectedShot ? `shot:${selectedShot.id}` : undefined })}>场次 / 镜头引用</Menu.Item>
                 </Menu.Dropdown></Menu>
               </div>
@@ -4863,6 +4901,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
         onPointerLeave={onCanvasPointerLeaveCapture}>
         {graph ? <CanvasEdgeMotionProvider><ReactFlow<FlowNode, Edge>
           nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+          proOptions={{ hideAttribution: true }}
           onlyRenderVisibleElements={virtualizeCanvas}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onConnect={onConnect} isValidConnection={isValidConnection}
@@ -4961,12 +5000,6 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
             <UnstyledButton className="pc-minimap-drag-handle" aria-label="拖动小地图" title="拖动小地图" />
             <MiniMap pannable zoomable nodeColor={node => node.selected ? '#929292' : '#535353'} />
           </div>}
-          <Tooltip label={sidebarOpen ? '收起节点列表' : '打开节点列表'}>
-            <ActionIcon variant="subtle" className="pc-node-list-toggle" aria-expanded={sidebarOpen}
-              aria-label={sidebarOpen ? '收起左侧节点列表' : '打开左侧节点列表'} onClick={() => setSidebarOpen(open => !open)}>
-              {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-            </ActionIcon>
-          </Tooltip>
           <div className="pc-flow-utility" aria-label="画布工具" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <CanvasNodeTypeFilter value={nodeTypeFilter} counts={nodeTypeCounts} onChange={changeNodeTypeFilter} />
             <Tooltip label={showMinimap ? '隐藏小地图' : '显示小地图'}><ActionIcon variant="subtle" aria-label={showMinimap ? '隐藏小地图' : '显示小地图'} aria-pressed={showMinimap} onClick={() => setShowMinimap(value => !value)}><MapIcon size={16} /></ActionIcon></Tooltip>
@@ -4990,11 +5023,16 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
               </Menu.Dropdown>
             </Menu>
           </div>
-          {!visualTool && !inspectedProfile && selectedNode && composerNodeId === selectedNode.id && selectedNode.type !== 'text' && selectedNode.type !== 'image_analysis' && selectedNode.type !== 'video_analysis' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} bottomInset={selectedProfile ? 26 : 0} onCollapse={() => {
+          {!visualTool && !inspectedProfile && selectedNode && composerNodeId === selectedNode.id && selectedNode.type !== 'text' && selectedNode.type !== 'image_analysis' && selectedNode.type !== 'video_analysis' && selectedNode.type !== 'project_script_ref' && selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNodeId && <CanvasComposerToolbar key={selectedNode.id} nodeId={selectedNode.id} expanded={composerExpanded} docked={dockComposer} bottomInset={selectedProfile ? 26 : 0} onCollapse={() => {
             if (composerBindingsOpen) closeComposerBindings()
             else setComposerExpanded(false)
           }}>
             <div className={`pc-prompt-composer nowheel ${selectedProfile ? 'pc-profile-composer' : ''} ${composerExpanded ? 'is-expanded' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+              {dockComposer && !composerExpanded && <header className="pc-composer-docked-head">
+                <div><strong>{selectedNode.title || '节点设置'}</strong>
+                  <ActionIcon variant="subtle" aria-label="关闭节点设置" onClick={() => setComposerNodeId(null)}><X size={15} /></ActionIcon></div>
+                {composerPreviewAsset?.kind === 'image' && <img src={composerPreviewAsset.url} alt="" />}
+              </header>}
               <div className="pc-prompt-composer-head">
                 <div className="pc-prompt-composer-chips">
                   {referenceReturnNode && referenceReturnNode.id !== selectedNode.id && <UnstyledButton type="button" className="pc-composer-chip pc-reference-return" aria-label={`返回生成节点：${referenceReturnNode.title}`} onClick={() => {
@@ -5523,6 +5561,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return <Modal opened onClose={() => setComposerNodeId(null)} title="图片反推提示词" size="lg" centered zIndex={250}>
         <CanvasImageAnalysisPanel asset={asset ? { id: asset.id, url: asset.url, label: asset.filename } : undefined}
           models={visionModels.map(model => ({ id: model.id, label: model.name }))} modelId={selectedNode.model_id || ''}
+          reasoningModel={selectedModel?.modality === 'text' ? selectedModel : undefined}
           instructions={selectedNode.settings.image_analysis_instructions || ''} prompt={selectedNode.text}
           pending={active && analysisRun.phase === 'analyzing'} uploading={active && analysisRun.phase === 'uploading'}
           otherPending={!!analysisRun && !active}
@@ -5537,7 +5576,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           }}
           onInstructionsChange={value => updateNodeSettingsById(selectedNode.id, { image_analysis_instructions: value })}
           onPromptChange={value => updateNodeById(selectedNode.id, { text: value })}
-          onAnalyze={() => void analyzeCanvasImage(selectedNode.id)} onCancel={cancelImageAnalysis}
+          onAnalyze={options => void analyzeCanvasImage(selectedNode.id, options)} onCancel={cancelImageAnalysis}
           onCreateGeneration={() => createGenerationFromAnalysis(selectedNode)} />
       </Modal>
     })()}
@@ -5548,6 +5587,7 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
       return <Modal opened onClose={() => setComposerNodeId(null)} title="视频反推提示词" size="xl" centered zIndex={250}>
         <CanvasVideoAnalysisPanel asset={asset ? { id: asset.id, url: asset.url, label: asset.filename } : undefined}
           models={videoAnalysisOptions} modelId={selectedNode.model_id || ''}
+          reasoningModel={selectedModel?.modality === 'text' ? selectedModel : undefined}
           instructions={selectedNode.settings.video_analysis_instructions || ''}
           startMs={selectedNode.settings.video_analysis_start_ms || 0} endMs={selectedNode.settings.video_analysis_end_ms ?? null}
           fps={selectedNode.settings.video_analysis_fps ?? 2} durationMs={asset ? videoAnalysis.durations[asset.id] : undefined}
@@ -5566,13 +5606,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           onFpsChange={value => updateNodeSettingsById(selectedNode.id, { video_analysis_fps: value })}
           onDurationChange={value => { if (asset) videoAnalysis.setDuration(asset.id, value) }}
           onResultChange={value => updateNodeById(selectedNode.id, { text: videoAnalysisText(value), settings: { ...selectedNode.settings, video_analysis_result: value } })}
-          onAnalyze={() => void videoAnalysis.analyze(selectedNode.id)} onCancel={videoAnalysis.cancel}
+          onAnalyze={options => void videoAnalysis.analyze(selectedNode.id, options)} onCancel={videoAnalysis.cancel}
           onOpenModels={() => { setComposerNodeId(null); onOpenModels() }}
           onCreateGeneration={index => createGenerationFromVideoAnalysis(selectedNode, index)} />
       </Modal>
     })()}
     {nodeMediaPreview && <CanvasMediaPreview key={`${nodeMediaPreview.asset.id}:${nodeMediaPreview.initialPanel || ''}`} asset={nodeMediaPreview.asset} title={nodeMediaPreview.title}
-      projectId={detail.id} reviewModels={reviewModels} shotId={nodeMediaPreview.shotId} initialPanel={nodeMediaPreview.initialPanel}
+      projectId={detail.id} reviewModels={reviewModels} reasoningModels={models} shotId={nodeMediaPreview.shotId} initialPanel={nodeMediaPreview.initialPanel}
       generationDurationMs={videoGenerationDurationMs(nodeMediaPreview.asset.id, detail.jobs)}
       plannedDurationMs={previewShot ? previewShot.duration * 1000 : undefined}
       onClose={() => setNodeMediaPreview(null)} />}
@@ -5587,12 +5627,13 @@ function ProjectCanvasInner({ detail, models, providers, onRefresh, onRenameProj
           setNotice('已应用优化后的提示词，请确认后手动生成')
         }} />}
     {dialog}
-    <ShotManager key={shotManagerVersion} opened={shotManagerOpen} onClose={() => setShotManagerOpen(false)} detail={detail}
+    <ShotManager key={shotManagerVersion} opened={workspace === 'shots' || shotManagerOpen} presentation={workspace === 'shots' ? 'page' : 'modal'} registerNavigationGuard={setShotWorkspaceGuard} headerControls={shotHeaderControls}
+      onClose={() => { setShotManagerOpen(false); if (workspace === 'shots') onCloseShotWorkspace?.() }} detail={detail}
       initialSceneIds={shotManagerScenes} initialDesignId={shotManagerDesign}
       onPlan={sceneIds => setPlanningSceneIds(sceneIds || [])}
       onPlanClip={() => setClipPlanningOpen(true)}
       activeCanvasId={canvas.id} onRefresh={refreshManagedResources} onAddToCanvas={addManagedShotsToCanvas} onNotice={setNotice} />
-    <StoryboardPlanner opened={planningSceneIds !== null} onClose={() => setPlanningSceneIds(null)} detail={detail}
+    <StoryboardPlanner opened={planningSceneIds !== null} presentation={workspace === 'shots' ? 'page' : 'modal'} onClose={() => setPlanningSceneIds(null)} detail={detail}
       models={models.filter(model => providers.some(provider => provider.id === model.provider_id && provider.enabled))}
       initialSceneIds={planningSceneIds || []} intent="plan" onRefresh={refreshManagedResources}
       onSaved={(result: ScriptCanvasResult) => {
@@ -5651,6 +5692,10 @@ export default function ProjectCanvas(props: ProjectCanvasProps) {
     onNavigate: (destination: Parameters<ProjectCanvasProps['onNavigate']>[0]) => latest.current.onNavigate(destination),
     onOpenScriptCreator: () => latest.current.onOpenScriptCreator(),
     onOpenSpeech: hasSpeech ? () => latest.current.onOpenSpeech!() : undefined,
+    onCloseShotWorkspace: props.onCloseShotWorkspace ? () => latest.current.onCloseShotWorkspace!() : undefined,
+    onOpenShotWorkspace: props.onOpenShotWorkspace ? () => latest.current.onOpenShotWorkspace!() : undefined,
+    onOpenVisualWorkspace: props.onOpenVisualWorkspace ? () => latest.current.onOpenVisualWorkspace!() : undefined,
+    registerNavigationGuard: props.registerNavigationGuard ? (guard: (() => Promise<boolean>) | null) => latest.current.registerNavigationGuard!(guard) : undefined,
     onOptimizedPromptDraftApplied: hasOptimizedDraftApplied ? () => latest.current.onOptimizedPromptDraftApplied!() : undefined,
     onRenameProject: hasRename ? (name: string) => latest.current.onRenameProject!(name) : undefined,
     onOpenScriptDocument: hasDocument ? (artifact: ScriptArtifact) => latest.current.onOpenScriptDocument!(artifact) : undefined,
@@ -5660,9 +5705,10 @@ export default function ProjectCanvas(props: ProjectCanvasProps) {
   }), [hasRename, hasDocument, hasDirector, hasLocation, hasSpeech, hasOptimizedDraftApplied, hasNodeProposalActions, hasShotManagementHandled])
   const renderCanvas = useCallback((canvas: ProjectCanvasInfo, session: CanvasSession, menu: React.ReactNode, register: (actions: CanvasActions | null) => void, viewportChanged: (viewport: ProjectCanvasInfo['viewport']) => void) =>
     <ReactFlowProvider key={canvas.id}><MemoProjectCanvasInner detail={props.detail} models={props.models} providers={props.providers} {...callbacks} initialLocation={locationRef.current}
+      workspace={props.workspace} projectHeader={props.projectHeader} shotHeaderControls={props.shotHeaderControls}
       shotManagementRequest={props.shotManagementRequest}
       optimizedPromptDraft={props.optimizedPromptDraft}
       canvas={canvas} canvasSession={session} canvasMenu={menu} registerCanvasActions={register} onCanvasViewport={viewportChanged} /></ReactFlowProvider>,
-  [props.detail, props.models, props.providers, props.optimizedPromptDraft, props.shotManagementRequest, callbacks])
+  [props.detail, props.models, props.providers, props.workspace, props.projectHeader, props.shotHeaderControls, props.optimizedPromptDraft, props.shotManagementRequest, callbacks])
   return <ProjectCanvasSwitcher projectId={props.detail.id} onResourcesChanged={callbacks.onRefresh}>{renderCanvas}</ProjectCanvasSwitcher>
 }

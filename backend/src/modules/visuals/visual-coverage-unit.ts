@@ -12,6 +12,35 @@ import { currentStructuredDispatchIntent, isLocalModelAdmissionDenied, structure
 import { visualProfileMaxAttempts } from './visual-profile-retry.js'
 import { coverageHash as hash, coverageRecoveryPolicy, coverageRecoveryState, coverageRecoveryToken, type CoverageAttempt } from './visual-coverage-recovery.js'
 
+export function visualCoverageBinding(input: { key: string; schema: z.ZodType; prompt: string; requestPrompt?: string }) {
+  const schema = outputContract('visual_reference_coverage', input.schema).schema
+  const identity = { policy: 'visual-coverage-unit-v1', prompt: input.prompt, schema }
+  const stepId = 'unit:' + hash(identity) + ':' + input.key
+  const requestPrompt = input.requestPrompt || input.prompt
+  const context_hash = hash({ policy: coverageRecoveryPolicy, stepId, prompt: requestPrompt, schema })
+  return { schema, identity, stepId, originalInput: { identity, key: input.key }, requestPrompt, context_hash }
+}
+
+export function assertCoverageResponseBinding(steps: GenerationSteps, binding: ReturnType<typeof visualCoverageBinding>, state: ReturnType<typeof coverageRecoveryState>) {
+  const { stepId, originalInput, schema, requestPrompt, context_hash } = binding
+  if (state.blocked || state.context_hash && state.context_hash !== context_hash) throw new Error('覆盖来源或请求状态未能完整核对')
+  const original = steps.readStructuredResponse?.(stepId, originalInput, 'visual_reference_coverage', originalInput.identity.prompt, schema)
+  if (!original && (state.legacy_replay_count || originalInput.key === '@visual-coverage' && state.source?.slot.startsWith('response:' + stepId + ':'))) {
+    throw new Error('历史覆盖与当前精确输入不匹配')
+  }
+  for (const attempt of state.attempts) {
+    const dispatch = (attempt.args as { dispatch_binding?: { prompt: string; schema: Record<string, unknown> } }).dispatch_binding
+    if (!steps.readStructuredResponse?.(attempt.id, attempt.args, 'visual_reference_coverage', dispatch?.prompt || requestPrompt, dispatch?.schema || schema)) {
+      throw new Error('用途补全响应未能精确绑定当前来源和契约')
+    }
+  }
+}
+
+export function coverageReplaySeed(state: ReturnType<typeof coverageRecoveryState>) {
+  const response = state.source?.response
+  return response?.local_repair?.candidate !== undefined ? JSON.stringify(response.local_repair.candidate) : response?.raw
+}
+
 /** Local validation never buys another model allowance. v1 bytes and fake
  * retry receipts stay immutable; explicit v2 actions append their own audit. */
 export async function visualCoverageUnit<T>(input: {
@@ -20,11 +49,8 @@ export async function visualCoverageUnit<T>(input: {
   dispatchSchema?: z.ZodType; dispatchPrompt?: string;
   validate: (value: unknown) => T; planLocalRepair?: StructuredOutputLocalPlanner; seedRaw?: string; allowModelDispatch?: boolean; normalize?: (value: unknown) => unknown; trustedTerminalTransport?: boolean;
 }): Promise<{ value: T } | { failure: CanvasUnitFailure }> {
-  const schema = outputContract('visual_reference_coverage', input.schema).schema
-  const identity = { policy: 'visual-coverage-unit-v1', prompt: input.prompt, schema }
-  const stepId = 'unit:' + hash(identity) + ':' + input.key, originalInput = { identity, key: input.key }
-  const requestPrompt = input.requestPrompt || input.prompt
-  const context_hash = hash({ policy: coverageRecoveryPolicy, stepId, prompt: requestPrompt, schema })
+  const binding = visualCoverageBinding(input)
+  const { schema, identity, stepId, originalInput, requestPrompt, context_hash } = binding
   let state = coverageRecoveryState(input.steps.checkpoint, stepId)
   if (state.blocked && input.trustedTerminalTransport) {
     const checkpoint = structuredClone(input.steps.checkpoint)
@@ -49,6 +75,7 @@ export async function visualCoverageUnit<T>(input: {
     if (!now.blocked && recovery.action === 'retry') recovery.token = coverageRecoveryToken(stepId, now.parent_hash, context_hash)
     const errorCode = (error as any)?.code
     if (errorCode === 'visual_coverage_local_target_unavailable') Object.assign(recovery, { action: 'inspect', model_call: 'none', token: undefined, reason: (error as Error).message })
+    if (!now.blocked && errorCode === 'visual_coverage_identity_ambiguous') Object.assign(recovery, { action: 'inspect', model_call: 'none', token: undefined, reason: (error as Error).message })
     const unit: CanvasUnitFailure = { unit_key: input.key, name: input.name, stage: 'coverage',
       code: now.blocked ? 'model_delivery_unknown' : errorCode || now.attempts.at(-1)?.failure_code || 'visual_coverage_conflict',
       message: error instanceof Error ? error.message : now.recovery.reason || '已有回答待补全，仅处理本镜用途。',
@@ -65,18 +92,12 @@ export async function visualCoverageUnit<T>(input: {
   // A changed code version is not permission to bypass a delivery fence.
   if (state.blocked || state.context_hash && state.context_hash !== context_hash) return failure(Object.assign(new Error('覆盖来源或执行版本未能完整核对，不能重新发送。'), { code: 'visual_coverage_retry_unavailable' }))
   try {
-    const old = input.steps.readStructuredResponse?.(stepId, originalInput, 'visual_reference_coverage', input.prompt, schema)
-    if (state.source && !old && state.legacy_replay_count > 0) throw new Error('历史覆盖与当前精确输入不匹配')
+    assertCoverageResponseBinding(input.steps, binding, state)
     // Validated IR is reused before any local or model attempt is opened.
     if (input.steps.checkpoint.steps[stepId]) {
       const saved = input.steps.checkpoint.steps[stepId]!
       if (saved.input_hash !== hash(originalInput)) throw new Error('已完成用途决策与当前输入不匹配')
       return { value: input.validate(saved.value) }
-    }
-    for (const attempt of state.attempts) {
-      const binding = (attempt.args as { dispatch_binding?: { prompt: string; schema: Record<string, unknown> } }).dispatch_binding
-      const saved = input.steps.readStructuredResponse?.(attempt.id, attempt.args, 'visual_reference_coverage', binding?.prompt || requestPrompt, binding?.schema || schema)
-      if (!saved) throw new Error('用途补全响应未能精确绑定当前来源和契约')
     }
     if (previous?.state === 'complete') {
       const saved = input.steps.checkpoint.steps[previous.id]
@@ -86,8 +107,7 @@ export async function visualCoverageUnit<T>(input: {
   } catch (error) { return failure(Object.assign(error as Error, { code: 'visual_coverage_retry_unavailable' })) }
   if (input.retryToken && input.steps.checkpoint.steps['coverage-attempt-v2:' + stepId + ':' + input.retryToken]) return failure()
   if (input.retryToken && (state.recovery.action !== 'retry' || input.retryToken !== token)) return failure(Object.assign(new Error('用途补全入口已变化，请重新读取状态；未发出请求。'), { code: 'visual_coverage_retry_unavailable' }))
-  const seed = state.source?.response.local_repair?.candidate !== undefined
-    ? JSON.stringify(state.source.response.local_repair.candidate) : state.source?.response.raw || input.seedRaw
+  const seed = coverageReplaySeed(state) || input.seedRaw
   // A purely structural upgrade can occasionally validate without a request.
   // It remains a local result, separate from the immutable paid response.
   if (seed) {
@@ -97,7 +117,9 @@ export async function visualCoverageUnit<T>(input: {
       input.steps.retain('coverage-local-v2:' + stepId + ':' + context_hash, '采用已验证本地用途决策',
         { context_hash, source_hash: hash(seed) }, value, input.validate)
       return { value }
-    } catch { /* Invalid semantic fields still require an explicit fixed patch. */ }
+    } catch (error) {
+      if ((error as any)?.code === 'visual_coverage_identity_ambiguous') return failure(error)
+    }
   }
   if (state.recovery.action === 'none' || state.recovery.action === 'inspect') return failure()
   if (!input.retryToken && (state.source || previous)) return failure()

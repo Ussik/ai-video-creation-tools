@@ -43,9 +43,9 @@ async function docxFixture() {
   return result
 }
 
-async function upload(projectId: string, filename: string, content: Buffer, modelId?: string) {
+async function upload(projectId: string, filename: string, content: Buffer, modelId?: string, reasoning?: string) {
   const boundary = 'script-source-boundary'
-  const result = await app.inject({ method: 'POST', url: `/api/projects/${projectId}/script/source${modelId ? `?model_id=${modelId}` : ''}`, headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  const result = await app.inject({ method: 'POST', url: `/api/projects/${projectId}/script/source${modelId ? `?model_id=${modelId}${reasoning ? `&reasoning=${reasoning}` : ''}` : ''}`, headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload: Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`), content, Buffer.from(`\r\n--${boundary}--\r\n`)]) })
   if (!modelId || result.statusCode !== 200) return result
   return app.inject({ method: 'GET', url: `/api/projects/${projectId}/script/source` })
@@ -60,17 +60,19 @@ test('TXT, Markdown, DOCX and PDF extract full readable text including dialogue 
   assert.match(await extractScriptText('script.pdf', pdfFixture('Opening scene and final dialogue.')), /Opening scene and final dialogue\./)
 })
 
-test('uploaded source analysis is preserved and reused by a new conversation without quality audit', async t => {
+test('uploaded source analysis keeps task reasoning and is reused by a new conversation without quality audit', { timeout: 15000 }, async t => {
   const project = (await app.inject({ method: 'POST', url: '/api/projects', payload: { name: '后台分析上传' } })).json()
   const provider = (await app.inject({ method: 'POST', url: '/api/providers', payload: { name: '分析', base_url: 'https://analysis.example/v1' } })).json()
   const model = (await app.inject({ method: 'POST', url: '/api/models', payload: { provider_id: provider.id, name: '文本', remote_id: 'test', modality: 'text', protocol: 'chat_completions', settings: {
-    request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } } })).json()
+    text_api: { mode: 'standard', max_output_tokens: 4096, reasoning: { enabled: true, mode: 'effort', default_level: 'medium',
+      levels: [{ level: 'medium', api_value: 'medium' }, { level: 'high', api_value: 'high' }] } } } } })).json()
   let release: () => void = () => {}, began: () => void = () => {}, chatCalls = 0
   const started = new Promise<void>(resolve => { began = resolve })
   const content = `第1集\n林舟回到故乡。\n${'旧街的日常。'.repeat(500)}\n剧本最后的重要事实。`
   t.mock.method(globalThis, 'fetch', async (_url, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)), prompt = body.messages[0].content as string
     if (prompt.includes('只为创作者上传的原剧本建立检索地图')) {
+      assert.equal(body.reasoning_effort, 'high')
       assert.equal(body.response_format?.type, 'json_schema', 'upload analysis negotiates native structured output')
       assert.ok(prompt.includes('剧本最后的重要事实。'))
       const batch = JSON.parse(prompt.slice(prompt.lastIndexOf('【原文片段】\n') + '【原文片段】\n'.length))
@@ -81,10 +83,14 @@ test('uploaded source analysis is preserved and reused by a new conversation wit
         began()
       })
     }
-    if (prompt.includes('【全剧整合资料】') || prompt.includes('【原稿分析核对资料】')) return Response.json({ choices: [{ message: { content: sourceAnalysisFixture(prompt) }, finish_reason: 'stop' }] })
+    if (prompt.includes('【全剧整合资料】') || prompt.includes('【原稿分析核对资料】')) {
+      assert.equal(body.reasoning_effort, 'high')
+      return Response.json({ choices: [{ message: { content: sourceAnalysisFixture(prompt) }, finish_reason: 'stop' }] })
+    }
     const scope = sourceScopeResponse(prompt)
     if (scope) return Response.json({ choices: [{ message: { content: scope }, finish_reason: 'stop' }] })
     chatCalls++
+    assert.equal(body.reasoning_effort, 'medium')
     assert.ok(prompt.includes('INPUT_VISUAL_STYLE: 日漫二维画风'))
     if (prompt.includes('本次独立调用只理解创作者意图')) assert.ok(!prompt.includes('MAP_STORY_SUMMARY'))
     else {
@@ -94,13 +100,15 @@ test('uploaded source analysis is preserved and reused by a new conversation wit
     return Response.json({ choices: [{ message: { content: prompt.includes('本次独立调用只理解创作者意图') ? JSON.stringify({ action: 'discuss', settings_patch: {} }) : '收到你的画风要求。' }, finish_reason: 'stop' }] })
   })
   try {
-    const uploaded = await upload(project.id, 'original.txt', Buffer.from(content), model.id)
+    assert.equal((await upload(project.id, 'original.txt', Buffer.from(content), model.id, 'xhigh')).statusCode, 422)
+    const uploaded = await upload(project.id, 'original.txt', Buffer.from(content), model.id, 'high')
     assert.equal(uploaded.statusCode, 200, uploaded.body)
     assert.equal(uploaded.json().content, content)
     assert.ok(['queued', 'running'].includes(uploaded.json().analysis.status))
     await started
     const path = `/api/projects/${project.id}/script/source/analysis`
     const running = (await app.inject({ method: 'GET', url: path })).json()
+    assert.deepEqual(running.text_generation_options, { reasoning: 'high' })
     assert.equal(running.status, 'running'); assert.equal(running.work, undefined); assert.equal(running.synthesis, undefined)
     const same = await app.inject({ method: 'POST', url: path, payload: { model_id: model.id, source_updated_at: uploaded.json().updated_at } })
     assert.equal(same.statusCode, 200, same.body); assert.equal(same.json().id, running.id)

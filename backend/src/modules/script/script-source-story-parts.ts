@@ -172,12 +172,13 @@ function validatePart(task: Task, input: unknown, state: ScriptSourceAnalysis, e
 function instruction(task: Task, local = false): string {
   if (task.kind === 'overview') return '本次只产出全剧summary、ending、settings和covered_section_ids；settings整理原文明示的背景、规则、限制与例外，必须附section_ids，未知则空数组。，不输出人物表、时间线、伏笔表和不确定事项表。covered_section_ids必须恰好覆盖全部目录。结合全文尤其后半部判断最终状态；资料没有结局则如实说明。'
   if (task.kind === 'characters') return '本次只产出characters。完整覆盖part.target_names中的每个人名；可把有明确证据的别名放进同一个人物的aliases，不能根据名字相似合并身份。每个人名和别名必须在所引section_ids中有原文或目录证据，别名涉及其他章节时一并引用。' +
+    '人物name和aliases字段只填写真实姓名或称呼，不要添加职业、身份等后缀（如"林清晏(第七科实习调查员)"是错误的，应写name:"林清晏"，职业信息写在description中）。' +
     '姓名与每个别名分别定位证据，不能仅引用主姓名出现的章节来替代别名来源；目录未列出某次称呼时仍以该章节原文为准。名称实际出现仅证明称呼存在。' +
     (local ? '同一身份关系须由已读原文明示，否则请求全文核实。' : '同一身份关系须结合完整原文确认。') +
     '其他批次的目录人物无需重复输出，但目标人物的跨章节别名必须保留，不能因属于其他批次而丢弃。' +
     (task.include_additional_characters ? '这是首次人物任务，还须检查全文中目录漏记的人物，补充有明确原文证据的其他人物，必须引用实际包含该姓名的章节；不为补齐数量添加人物。' : '目录之外的其他独立人物由首次人物任务负责，不在本批新增。')
   if (task.kind === 'characters_merge') return '本次只产出characters，归并part.merge_candidates中重复的人物表述。候选来自已校验任务，但同名或别名关系仍须依据已读原文确认；局部资料不足须needs_full_source请求扩读，不能把两个独立人物误合并。完整保留part.target_names中的所有姓名与别名及各自合法来源；只能使用这些名字。去重整理人物描述，完整保留身份、关系和关键状态事实，每份描述仍须不超过600字符，每个人物别名不超过8项。不要机械拼接导致超限，不得截断事实或随意丢弃别名；不能由原文支持的身份合并应纠正为独立人物。'
-  if (task.kind === 'timeline') return (task.scope_version === 2 ? '每条timeline必须返回primary_section_id，表示主要发生或披露的负责章节，必须在part.section_ids内且同时属于该条section_ids。section_ids可包含跨章辅助依据；不得用辅助引用冒充主要归属。兄弟任务的完整责任范围在sibling_coverage中，独立事件由主要归属任务产出。' : '') + '本次只产出timeline和covered_section_ids。covered_section_ids必须恰好等于part.section_ids，timeline须覆盖其中每个已有关键事件的章节并完整保留其关键事实，不能用覆盖ID代替事实梳理。通读全剧后按剧情顺序写这些章节的事件、因果与人物状态变化，可在section_ids中引用其他章节说明前因后果；其他章节的独立事件不重复输出。'
+  if (task.kind === 'timeline') return (task.scope_version === 2 ? '每条timeline必须返回primary_section_id，表示主要发生或披露的负责章节，必须在part.section_ids内且同时属于该条section_ids。section_ids可包含跨章辅助依据；不得用辅助引用冒充主要归属。兄弟任务的完整责任范围在sibling_coverage中，独立事件由主要归属任务产出。' : '') + '本次只产出timeline和covered_section_ids。covered_section_ids必须恰好等于part.section_ids，timeline须覆盖其中每个已有关键事件的章节并完整保留其关键事实，不能用覆盖ID代替事实梳理。【重要】目录中标记有events的章节必须在timeline的section_ids中至少被引用一次，不能遗漏任何有关键事件的章节。通读全剧后按剧情顺序写这些章节的事件、因果与人物状态变化，可在section_ids中引用其他章节说明前因后果；其他章节的独立事件不重复输出。'
   if (task.kind === 'uncertainties') return '本次只产出uncertainties。结合完整原文和完整目录确认真实不确定事项，尚未向角色或观众揭示但后文已经解释的身份、规则和伏笔不当成作者缺口。仅返回至少一个真实来源章节落在part.section_ids中的事项，可引用全剧其他章节说明最终状态。不虚构资料未提出的问题，不要求为纯设定案补写剧情或结局。'
   return '本次只产出threads，结合完整原文与全部目录连接跨章节的伏笔和回收。仅返回至少一个真实铺垫或回收来源章节落在part.section_ids中的伏笔；其他章节起源的事项由其对应范围处理。setup记录铺垫，payoff记录原文明示的回收；没有回收则null，不能补写。section_ids保留实际铺垫和回收的来源，可跨本次范围引用后半部及结局，不能因返回范围限制遗漏远处回收。'
 }
@@ -304,7 +305,12 @@ export async function synthesizeSourceStoryParts(state: ScriptSourceAnalysis, ge
     if (localReplayOnly && saved.result === undefined && !generate.readCompleted &&
       (!sourceCheckpointResponseFact(saved.output_candidate?.checkpoint).saved ||
         sourceCheckpointResponseFact(saved.output_candidate?.checkpoint).response === 'unknown_response')) throw pendingRequest()
-    const usesEvidence = evidenceMode && (['timeline', 'threads', 'uncertainties'].includes(task.kind) || task.kind === 'characters' && !task.include_additional_characters || task.kind === 'characters_merge')
+    // Cross-chapter synthesis must see the complete manuscript. Timeline
+    // batches can remain section-scoped because ownership is chronological.
+    // Threads and uncertainties need distant setup/payoff and final-state
+    // evidence, so section batches only partition their output ownership.
+    const usesEvidence = evidenceMode && (task.kind === 'timeline' ||
+      task.kind === 'characters' && !task.include_additional_characters || task.kind === 'characters_merge')
     const evidenceInput = () => usesEvidence ? sourceStoryEvidenceInput(state, source, task, saved!.evidence_expansion?.section_ids) : undefined
     const requestedEvidenceSchema = z.object({ needs_section_ids: z.array(z.number().int().min(0)).min(1).max(1000), reason: z.string().min(1).max(600) }).strict()
     const parseExpansion = (input: unknown) => {
@@ -549,7 +555,12 @@ export async function synthesizeSourceStoryParts(state: ScriptSourceAnalysis, ge
               requestSchema, initialGenerate, requestPrompt, {
                 signal: stepSignal, checkpoint: retained.checkpoint, persistCheckpoint: persist, preserveInputIdentity: true,
                 context: { ...currentModelRequestContext(), policy: currentModelRequestContext()?.policy || modelTaskPolicies.generation,
-                  resultDetails: { task_key: task.key, section_ids: task.section_ids || [], request_category: local || usesEvidence ? 'targeted' : 'full_source', input_source_chars: evidenceInput()?.source_ranges.reduce((n, r) => n + r.content.length, 0) ?? (local ? scoped!.coverage.selected_length : source.content.length), input_index_chars: JSON.stringify(evidenceInput()?.position_index || []).length, evidence_expanded: !!saved.evidence_expansion } },
+                  resultDetails: { task_key: task.key, section_ids: task.section_ids || [], request_category: local || usesEvidence ? 'targeted' : 'full_source', input_source_chars: evidenceInput()?.source_ranges.reduce((n, r) => n + r.content.length, 0) ?? (local ? scoped!.coverage.selected_length : source.content.length), input_index_chars: JSON.stringify(evidenceInput()?.position_index || []).length, evidence_expanded: !!saved.evidence_expansion },
+                },
+                recoveryContext: {
+                  evidenceFingerprint: evidenceInput()?.source_ranges.map(({ offset, length }) => [offset, length]),
+                  upstreamVersions: { source_version: state.source_version },
+                },
                 guardInitialDispatch: true, ...sourceStructuredPolicy(evidenceMode), normalize: normalization,
                 ...(evidenceMode ? { localRepairOnly: true, planLocalRepair: storyPartLocalRepair(schema, state.sections.length, evidenceInput() || source) } : task.kind === 'timeline' && task.scope_version === 2 ? { planLocalRepair: (candidate: unknown) => planTimelineLocalRepair(candidate, task, state.sections.length, source) } : {}),
                 onAttempt: attempt => { formatRound = attempt; if (expansion) throw new EvidenceExpansionRequested(); if (scopeRequired) throw scopeRequired }, validate: input => {
@@ -557,9 +568,27 @@ export async function synthesizeSourceStoryParts(state: ScriptSourceAnalysis, ge
                     expansion = parseExpansion(input)
                     if (expansion) throw new EvidenceExpansionRequested(expansion)
                     if (usesEvidence) {
-                      const read = new Set(evidenceInput()!.selected_section_ids)
+                      // Semantic check: synthesis tasks (overview, timeline, threads, uncertainties) need to reference
+                      // all generated sections, not just the "read" evidence range from adjacent-evidence mode.
+                      // Industry best practice: semantic validation beyond schema checks.
+                      const isSynthesisTask = task.kind === 'overview' || task.kind === 'timeline' ||
+                                            task.kind === 'threads' || task.kind === 'uncertainties'
+                      const read = isSynthesisTask
+                        ? new Set(state.sections.map((_, id) => id))  // Synthesis: all generated sections
+                        : new Set(evidenceInput()!.selected_section_ids)  // Paged generation: only provided evidence
                       const items = Object.values(input as object).flat().filter(v => v && typeof v === 'object' && 'section_ids' in v) as Array<{ section_ids: number[] }>
-                      if (items.some(v => v.section_ids.some(id => !read.has(id)))) throw new Error('整合引用包含尚未读取的原文；必须先明确请求扩读')
+                      const outOfRange = items.flatMap((v, index) => {
+                        const invalid = v.section_ids.filter(id => !read.has(id))
+                        return invalid.length ? [{ index, item: v, invalid_ids: invalid }] : []
+                      })
+                      if (outOfRange.length) {
+                        const firstBad = outOfRange[0]!
+                        const field = task.kind
+                        throw Object.assign(new Error(`整合引用包含尚未读取的原文；必须先明确请求扩读。已提供章节ID：${[...read].slice(0, 5).join(',')}${read.size > 5 ? '等' : ''}；越界引用：${firstBad.invalid_ids.slice(0, 3).join(',')}${firstBad.invalid_ids.length > 3 ? '等' : ''}`), {
+                          code: 'source_evidence_out_of_range',
+                          sourceEvidenceRangeIssue: { field, indices: outOfRange.map(v => v.index), provided_section_ids: [...read], items: outOfRange.map(v => ({ index: v.index, invalid_ids: v.invalid_ids, item: v.item })) },
+                        })
+                      }
                     }
                     if (local) {
                       const envelope = input as z.infer<typeof scopedCharactersSchema>
