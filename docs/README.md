@@ -18,6 +18,13 @@ flowchart LR
     F --> G[导出 MP4]
 ```
 
+## 架构参考
+
+| 文档 | 用途 |
+| --- | --- |
+| [剧本创作到成片的智能体架构](script-to-video-agent-architecture.md) | 当前实现、成熟架构思想和后续优化功能清单 |
+| [剧本到成片架构调整实施计划](superpowers/plans/2026-11-23-script-to-video-architecture-adjustment.md) | 实现级任务、接口方向、测试、依赖和迁移验收 |
+
 ## 按任务找指南
 
 | 我想做什么 | 打开哪份指南 | 完成后得到什么 |

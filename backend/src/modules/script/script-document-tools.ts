@@ -756,12 +756,14 @@ export function documentTools(context: ToolsContext) {
     if (context.action && !context.action.document_ids.includes(id)) problem('本次只处理创作者选择的文档，其他文档可读取评审但不能修改')
     if (context.workflow) {
       const doc = docs().find(item => item.id === id) || getToolDraft(projectId)?.documents.find(item => item.id === id), target = doc && documentStage(doc)
-      if (!target || target.stage !== context.workflow || target.episode_number !== (context.stage.episode_number || 0)) problem('本次只能修改明确指定的阶段与集数')
+      if (!target || target.stage !== context.workflow || target.episode_number !== (context.stage.episode_number || 0) ||
+        (context.taskContract?.artifact_types && !context.taskContract.artifact_types.some(type => type === doc?.artifact_type))) problem('本次只能修改明确指定的阶段与集数')
     }
   }
+  const hasSourceOrBrief = () => Boolean(context.project.brief.trim() || scriptSourceDocument(projectId, false))
   const canDraft = () => {
     if (context.workflow) {
-      const issue = stageOperationError(context.script(), { stage: context.workflow, episode_number: context.stage.episode_number || 0, operation: context.operation, intent: context.taskContract?.intent })
+      const issue = stageOperationError(context.script(), { stage: context.workflow, episode_number: context.stage.episode_number || 0, operation: context.operation, ...context.taskContract }, hasSourceOrBrief())
       if (issue) problem(issue)
     }
     if (context.discussionOnly || context.action?.operation === 'review') problem('本轮只讨论或评审，不创建或保存文档草稿')
@@ -1177,7 +1179,7 @@ export function documentTools(context: ToolsContext) {
           const regenerating = context.operation === 'regenerate'
           if (context.operation === 'revise') problem('本轮为局部修订，请使用propose_document_patch')
           if (regenerating && !context.workflow) problem('重新设计必须明确指定已保存的阶段与集数')
-          const issue = stageOperationError(context.script(), { stage: data.stage, episode_number: data.episode_number, intent: data.intent, operation: context.operation || (progress.completed[data.stage] && missingStageArtifacts(data.stage, docs().filter(doc => doc.episode_number === data.episode_number)).length ? 'supplement' : 'generate') })
+          const issue = stageOperationError(context.script(), { stage: data.stage, episode_number: data.episode_number, intent: data.intent, artifact_types: context.taskContract?.artifact_types, operation: context.operation || (progress.started[data.stage] && missingStageArtifacts(data.stage, docs().filter(doc => doc.episode_number === data.episode_number)).length ? 'supplement' : 'generate') }, hasSourceOrBrief())
           if (issue) problem(issue)
           data.operation = context.operation || 'generate'
           const differentStage = data.stage !== progress.next_stage || data.stage === 'episode' && data.episode_number !== progress.next_episode

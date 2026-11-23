@@ -97,7 +97,7 @@ test('a first generation opens its retained outline even before any accepted scr
     assert.match(section.textContent!, /第一份已经保留的完整大纲。/)
     assert.equal(section.querySelector('.script-section-empty'), null)
     assert.equal(section.querySelector('[contenteditable="false"]')?.textContent, '第一份已经保留的完整大纲。')
-    assert.match(view.container.querySelector('.script-stage-completeness')!.textContent!, /已生成 1\/9 项，1 项待确认/)
+    assert.match(view.container.querySelector('.script-stage-completeness')!.textContent!, /已填写 0\/9 项，1 项待确认/)
     assert.equal(button('保存').disabled, true)
     assert.equal(button('规划分镜').disabled, true)
     assert.deepEqual(view.requests, [])
@@ -340,18 +340,36 @@ test('stage supplement buttons open the requested missing scope and wait for sav
   } finally { await view.destroy() }
 })
 
-test('stages without a saved primary document keep manual entry and do not offer unsupported supplement requests', async t => {
+test('an empty character column opens a generation request scoped to that column', async t => {
+  const selections: unknown[] = []
+  const view = await mount(t, project, { onSupplementStage: (stage, type) => selections.push([stage, type]) })
+  try {
+    await act(() => button('人物设定', view.container).click())
+    await act(() => button('生成人物关系', view.container).click())
+    assert.deepEqual(selections, [['characters', 'relationships']])
+    assert.deepEqual(view.requests, [])
+  } finally { await view.destroy() }
+})
+
+test('a stage with only a secondary column saved can supplement missing columns', async t => {
   const detail = { ...project, script: { ...project.script, artifacts: [
     { id: 'atmosphere', artifact_type: 'location_atmosphere', title: '视觉与氛围', content: '薄雾', position: 0, status: 'ready' },
   ] } } as unknown as ProjectDetail
-  const view = await mount(t, detail, { onSupplementStage: () => assert.fail('unavailable stage supplement') })
+  const selected: string[] = []
+  const view = await mount(t, detail, { onSupplementStage: stage => selected.push(stage) })
   try {
     for (const title of ['场景设计', '道具设计']) {
       await act(() => button(title).click())
-      assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === `补齐${title}缺项`))
+      if (title === '场景设计') {
+        assert.match(view.container.querySelector('.script-stage-completeness')!.textContent!, /已填写 1\/4/)
+        await act(() => button('补齐场景设计缺项').click())
+      } else {
+        assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === '补齐道具设计缺项'))
+      }
       assert.ok(view.container.querySelector('.script-section-empty [aria-label^="手动填写"]'))
       assert.doesNotMatch(view.container.querySelector('.script-section-empty')!.textContent!, /通过上方入口/)
     }
+    assert.deepEqual(selected, ['locations'])
     assert.deepEqual(view.requests, [])
   } finally { await view.destroy() }
 })

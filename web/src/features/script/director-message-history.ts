@@ -1,4 +1,4 @@
-import { workflowProgress, type WorkflowProgressInput } from '@video-studio/shared/script/script-stage-access'
+import { workflowProgress, missingSavedStageArtifacts, type StageTarget, type WorkflowProgressInput } from '@video-studio/shared/script/script-stage-access'
 
 type DirectorFailureMessage = {
   role: 'assistant' | 'user'
@@ -7,7 +7,7 @@ type DirectorFailureMessage = {
     title?: string
     targets?: string[]
     outcome?: { kind?: string }
-    workflow?: { stage: 'outline' | 'characters' | 'locations' | 'props' | 'episode'; episode_number: number }
+    workflow?: StageTarget
   }
   activity?: Array<{ label?: string; summary?: string; scope?: string }>
 }
@@ -43,9 +43,10 @@ function inferLegacyWorkflow(message: DirectorFailureMessage): DirectorWorkflow 
 export function isSavedDirectorWorkflow(workflow: DirectorWorkflow | undefined, script: WorkflowProgressInput) {
   if (!workflow) return false
   const progress = workflowProgress(script)
-  return workflow.stage === 'episode'
-    ? progress.episodes.includes(workflow.episode_number)
-    : progress.completed[workflow.stage]
+  if (workflow.stage === 'episode') return progress.episodes.includes(workflow.episode_number)
+  if (!workflow.artifact_types?.length) return progress.started[workflow.stage]
+  const missing = missingSavedStageArtifacts(script, workflow)
+  return workflow.artifact_types.every(type => !missing.includes(type))
 }
 
 /** A failed workflow attempt remains auditable, but stops being current once its

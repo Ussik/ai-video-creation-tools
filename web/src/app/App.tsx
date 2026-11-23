@@ -1194,10 +1194,11 @@ function App() {
           onOpenModels={() => { void selectedNav('models') }}
           onOpenCanvas={() => { void navigateProjectWorkspace('canvas') }}
           onOpenSource={() => { void navigateProjectWorkspace('source') }}
-          onSupplementStage={async stage => {
+          onSupplementStage={async (stage, artifactType) => {
             if (!await canLeaveProjectWorkspace()) return
             setScriptEditorOpen(false)
-            openScriptDirector('all', { stage, episode_number: 0, operation: 'supplement', intent: 'stage_design' })
+            openScriptDirector('all', { stage, episode_number: 0, intent: 'stage_design',
+              operation: artifactType ? 'generate' : 'supplement', ...(artifactType ? { artifact_types: [artifactType] } : {}) })
           }}
           onNotice={setNotice}
         />

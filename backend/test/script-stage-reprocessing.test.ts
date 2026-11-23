@@ -596,6 +596,27 @@ test('unfinished stages and episode gaps are locked while saved stages remain av
   assert.equal(stageOperationError(script(), { stage: 'episode', episode_number: 1, operation: 'revise' }), null)
 })
 
+test('saved columns determine completion while a targeted design can use available story material', () => {
+  const script = { artifacts: [
+    { artifact_type: 'relationships', content: '姐弟因误会分开', status: 'ready' },
+    { artifact_type: 'characters', content: '弟弟在旧街寻找姐姐', status: 'draft' },
+  ] }
+  const progress = workflowProgress(script)
+  assert.deepEqual(progress.columns.characters, { saved: 1, total: 2 })
+  assert.equal(progress.started.characters, true)
+  assert.equal(progress.completed.characters, false)
+  assert.equal(progress.next_stage, 'outline')
+
+  const target = { stage: 'locations', episode_number: 0, intent: 'stage_design', artifact_types: ['location_atmosphere'] } as const
+  const request = { ...target, artifact_types: [...target.artifact_types] }
+  assert.match(stageOperationError({}, request)!, /上传剧本、填写故事创意/)
+  assert.equal(stageOperationError({}, request, true), null)
+  assert.equal(stageOperationError(script, request), null)
+  assert.match(stageOperationError(script, { stage: 'locations', episode_number: 0 })!, /先完成并保存故事大纲/)
+  assert.match(stageOperationError(script, { stage: 'characters', episode_number: 0, intent: 'stage_design',
+    artifact_types: ['relationships'] })!, /所选栏目已保存/)
+})
+
 test('all four project stages can be redesigned as complete reviewable drafts, preserving IDs and unrelated documents', async () => {
   for (const stage of ['outline', 'characters', 'locations', 'props'] as const) {
     const { project, script, tools } = await fixture()
@@ -714,6 +735,37 @@ test('API refuses a typed future-stage generation before any provider call', asy
     assert.match(response.body, /请先完成并保存故事大纲/)
   }
   assert.equal(calls, 0)
+})
+
+test('single-column generation can skip earlier stages and saves only the selected draft', async t => {
+  const project = await call('POST', '/api/projects', { name: '先写场景氛围', brief: '侦探在旧车站寻找失踪的姐姐。' })
+  const provider = await call('POST', '/api/providers', { name: '单栏模拟', base_url: 'https://single-column.invalid/v1' })
+  const model = await call('POST', '/api/models', { provider_id: provider.id, name: '文本', remote_id: 'mock', modality: 'text',
+    protocol: 'chat_completions', settings: { request_path: 'chat/completions', request_template: { model: '{{model}}', messages: [{ role: 'user', content: '{{prompt}}' }] }, text_path: 'choices.0.message.content' } })
+  let writes = 0
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const reviewed = draftCompletenessFixtureResponse(init)
+    if (reviewed) return reviewed
+    const body = JSON.parse(String(init?.body))
+    assert.doesNotMatch(body.messages[0].content, /本次独立调用只理解创作者意图/)
+    writes++
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ scenes: [], artifacts: [
+      { artifact_type: 'location_atmosphere', title: '视觉与氛围', content: '旧车站的灯时亮时灭，空站台回荡着风声。' },
+    ] }) }, finish_reason: 'stop' }] })
+  })
+  const result = await call('POST', `/api/projects/${project.id}/script/director/chat`, {
+    model_id: model.id, mode: 'script', use_tools: true,
+    workflow: { stage: 'locations', episode_number: 0, intent: 'stage_design', artifact_types: ['location_atmosphere'] },
+    messages: [{ role: 'user', text: '只生成视觉与氛围' }],
+  })
+  assert.equal(writes, 1)
+  assert.deepEqual(result.tool_draft.documents.map((doc: ScriptArtifact) => doc.artifact_type), ['location_atmosphere'])
+  assert.equal(all('SELECT * FROM script_artifacts WHERE project_id=?', project.id).length, 0)
+  commitToolDraft(project.id, result.tool_draft.id, result.tool_draft.version, () => ({
+    outline: '', characters: '', scenes: [], generation_options: {},
+  }))
+  assert.deepEqual(all<ScriptArtifact>('SELECT * FROM script_artifacts WHERE project_id=?', project.id)
+    .map(doc => doc.artifact_type), ['location_atmosphere'])
 })
 
 test('stage operation survives persisted execution records and cannot weaken whole-stage output into a patch', async () => {

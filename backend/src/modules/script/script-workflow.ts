@@ -382,10 +382,11 @@ export type { WorkflowProgressInput } from '@video-studio/shared/script/script-s
 
 export function workflowGuidance(script: WorkflowProgressInput): string {
   const progress = workflowProgress(script)
-  const saved = workflowStages.filter(stage => progress.completed[stage] && stage !== 'episode').map(stage => workflowLabels[stage])
-  return `创作推荐顺序：故事方向 → 全剧故事大纲 → 全剧人物设定与关系 → 全剧场景设计 → 全剧道具设计 → 指定集正文 → 分镜。大纲与人物可迭代，场景/道具按剧情需要补齐；未保存阶段必须依次生成并确认保存；已保存阶段可随时明确指定修改、补齐或重新设计。\n` +
+  const saved = Object.entries(progress.columns).filter(([, count]) => count.saved > 0)
+    .map(([stage, count]) => `${workflowLabels[stage as Exclude<WorkflowStage, 'episode'>]}（已保存 ${count.saved}/${count.total}）`)
+  return `创作推荐顺序：故事方向 → 全剧故事大纲 → 全剧人物设定与关系 → 全剧场景设计 → 全剧道具设计 → 指定集正文 → 分镜。大纲与人物可迭代，场景/道具按剧情需要补齐；整阶段生成按推荐顺序；明确指定部分栏目时，可依据现有故事资料单独生成。\n` +
     `已保存全剧资料：${saved.join('、') || '无'}。已保存正文集数：${progress.episodes.join('、') || '无'}。\n` +
-    (progress.next_stage ? `按已有成果推荐下一步：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。\n` : '已保存资料和已设定集数的正文已齐备，可核对连续性或制作分镜。\n') +
+    (progress.next_stage ? `按已有成果推荐下一步：${progress.next_stage === 'episode' ? `第 ${progress.next_episode} 集正文` : workflowLabels[progress.next_stage]}。\n` : '已设定集数的正文已保存，可核对连续性或制作分镜。\n') +
     '已有文档必须复用，不能声称它未生成或重复建议从头生成；仅当创作者要求修改或实际发现与新大纲的具体冲突时，说明受影响部分并建议针对性更新，保留无关内容。大纲更新不自动使人物/场景/道具失效，不强制重做。普通讨论的推进建议应先补最早缺失的全剧资料；仅提到下一阶段不自动授权生成文档。\n'
 }
 
@@ -409,7 +410,7 @@ export type DirectorInteraction = {
 
 export function workflowProgressKey(script: WorkflowProgressInput): string {
   const progress = workflowProgress(script)
-  return JSON.stringify([progress.completed, progress.episodes, progress.next_episode])
+  return JSON.stringify([progress.columns, progress.episodes, progress.next_episode])
 }
 
 export function directorStageContext(script: WorkflowProgressInput, options: {

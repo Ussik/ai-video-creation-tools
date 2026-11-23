@@ -89,7 +89,7 @@ export type DirectorInteraction = {
 
 export function workflowProgressKey(script: WorkflowProgressInput): string {
   const progress = workflowProgress(script)
-  return JSON.stringify([progress.completed, progress.episodes, progress.next_episode])
+  return JSON.stringify([progress.columns, progress.episodes, progress.next_episode])
 }
 
 export function directorStageContext(script: WorkflowProgressInput, options: {

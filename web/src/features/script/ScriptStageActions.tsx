@@ -15,7 +15,7 @@ export default function ScriptStageActions({ script, disabled, outlineIssue, ana
   const menuAction = (target: StageActionTarget) => ({ disabled: disabled || Boolean(waitFor(target)), title: waitFor(target) || undefined, onClick: () => onAction(target) })
   return <div className="sd-stage-actions" aria-label="阶段处理">
     {scriptStageOrder.map(stage => {
-      const saved = stage === 'episode' ? progress.episodes.length > 0 : progress.completed[stage]
+      const saved = stage === 'episode' ? progress.episodes.length > 0 : progress.started[stage]
       const current = progress.next_stage === stage
       const target = { stage, episode_number: stage === 'episode' ? progress.next_episode || 1 : 0 }
       const analysisReason = stage === 'episode' && saved
@@ -25,7 +25,7 @@ export default function ScriptStageActions({ script, disabled, outlineIssue, ana
         <Menu.Target><Button variant="subtle" className="sd-stage-button is-saved" disabled={disabled || Boolean(analysisReason)} title={analysisReason || undefined}
           aria-label={`处理已保存的${stageLabels[stage]}`}>{stageLabels[stage]}<ChevronDown size={12} /></Button></Menu.Target>
         <Menu.Dropdown>
-          <Menu.Label>{stage === 'episode' ? '已保存分集' : `${stageLabels[stage]} · 已保存`}</Menu.Label>
+          <Menu.Label>{stage === 'episode' ? '已保存分集' : `${stageLabels[stage]} · 已保存 ${progress.columns[stage].saved}/${progress.columns[stage].total}`}</Menu.Label>
           {stage === 'episode' ? <>
             {progress.episodes.map(episode => <Fragment key={episode}>
               <Menu.Item leftSection={<Pencil size={14} />} {...menuAction({ stage, episode_number: episode, operation: 'revise' })}>修改第 {episode} 集正文</Menu.Item>

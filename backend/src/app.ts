@@ -20,7 +20,7 @@ import { runDirectorExecutionBudget } from './modules/script/director-execution-
 import { withModelAdmission } from './modules/generation/model-admission.js'
 import { generationUnitStore } from './modules/generation/generation-unit-store.js'
 import { executeGenerationUnits } from './modules/generation/generation-unit-execution.js'
-import { stageOperationError, type StageOperation } from '@video-studio/shared/script/script-stage-access'
+import { isScopedStageDesign, missingSavedStageArtifacts, stageOperationError, type StageOperation } from '@video-studio/shared/script/script-stage-access'
 import Fastify, { type FastifyInstance } from 'fastify'
 import multipart from '@fastify/multipart'
 import { createHash } from 'node:crypto'
@@ -1237,7 +1237,7 @@ async function toolDirectorChat(project: Project, data: DirectorInput, model: Mo
   }
   if (data.workflow) {
     data = { ...data, workflow: workflowRequest.parse(initialScriptTaskContract(data.workflow, Boolean(scriptSourceDocument(project.id, false)))) }
-    const issue = stageOperationError(projectScript(project.id), data.workflow!)
+    const issue = stageOperationError(projectScript(project.id), data.workflow!, Boolean(project.brief.trim() || scriptSourceDocument(project.id, false)))
     if (issue) invalid(issue)
   }
   if (data.workflow && data.workflow.operation !== 'revise') {
@@ -1481,7 +1481,7 @@ async function resolveDirectorIntent(project: Project, data: DirectorInput, mode
   if (data.workflow && data.intent_context?.pending_draft) return { data, reply: '当前还有待确认草稿。请先保存或放弃它，再开始新的文档创作。' }
   if (data.focus_artifact !== 'all' || data.document_action) return { data }
   if (data.workflow) {
-    const issue = stageOperationError(projectScript(project.id), data.workflow)
+    const issue = stageOperationError(projectScript(project.id), data.workflow, Boolean(project.brief.trim() || scriptSourceDocument(project.id, false)))
     if (issue) return { data, reply: issue }
     return { data }
   }
@@ -1521,12 +1521,7 @@ async function resolveDirectorIntent(project: Project, data: DirectorInput, mode
     // Only use full version for early stages (outline, characters)
     // All other cases (locations, props, or uncertain intent recognition) use compressed version
     const isEarlyStage = (data.workflow as any)?.stage === 'outline' || (data.workflow as any)?.stage === 'characters'
-    if (isEarlyStage) {
-      uploadedScript = sourceIndexRaw
-    } else {
-      // Compress for all other stages to avoid context window exceeded
-      uploadedScript = compressScriptSourceIndex(sourceIndexRaw)
-    }
+    uploadedScript = sourceIndexRaw && (isEarlyStage ? sourceIndexRaw : compressScriptSourceIndex(sourceIndexRaw))
   }
 
   const prompt = scriptIntentPrompt({
@@ -1604,7 +1599,7 @@ async function resolveDirectorIntent(project: Project, data: DirectorInput, mode
   }
   const operation: StageOperation = intent.operation === 'create' || intent.operation === 'adopt' ? 'generate' : intent.operation
   const target = { ...intent.workflow, ...(operation === 'generate' ? {} : { operation }) }
-  const issue = stageOperationError(script, target)
+  const issue = stageOperationError(script, target, Boolean(project.brief.trim() || scriptSourceDocument(project.id, false)))
   if (issue) return { ...resolved, data: { ...next, intent_context: { ...next.intent_context, discussion: directorStageContext(script, { explicit: target }) } }, reply: issue }
   let sourceText: string | undefined
   if (intent.operation === 'adopt') {
@@ -3543,6 +3538,12 @@ export function buildApp(): FastifyInstance {
       if (expectedSource === undefined) throw Object.assign(new Error('历史草稿缺少原稿版本记录，请重新生成核对后保存；草稿内容仍保留'), { statusCode: 409 })
       if (expectedSource !== currentScriptSourceVersion(id)) throw Object.assign(new Error('文稿来源已变化，草稿仍保留，请重新生成核对后保存'), { statusCode: 409 })
       const current = projectScript(id)
+      if ((!data.operation || data.operation === 'generate') && isScopedStageDesign(data)) {
+        const missing = missingSavedStageArtifacts(current, data)
+        if (data.artifacts.some(artifact => !missing.includes(artifact.artifact_type))) {
+          throw Object.assign(new Error('所选栏目已有正式版本，请刷新后查看，草稿仍保留'), { statusCode: 409 })
+        }
+      }
       const preserved = preservedStageArtifacts(id, data)
       for (const original of preserved) {
         const submitted = data.artifacts.find(artifact => artifact.artifact_type === original.artifact_type)

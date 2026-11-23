@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import { api, json } from '../../shared/api/api'
 import type { Model, PlannedScene, PlannedShot, PlannedShotCreationResult, ProjectDetail, Provider, ScriptArtifactType, ScriptGenerationOptions, ShotPlanResult } from '../../shared/api/api'
-import { scriptArtifactLabels, scriptStageArtifacts, scriptStageForArtifact, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
+import { scriptArtifactLabels, scriptStageArtifacts, scriptStageForArtifact, type StageArtifactType, type ScriptStage } from '@video-studio/shared/script/script-stage-content'
 import { workflowProgress } from '@video-studio/shared/script/script-stage-access'
 import { maxScriptSceneDuration } from '@video-studio/shared/script/script-duration'
 import './script-editor.css'
@@ -191,7 +191,7 @@ export interface ScriptEditorProps {
   onOpenSource?: () => void
   onNotice: (message: string) => void
   onDirtyChange?: (dirty: boolean) => void
-  onSupplementStage?: (stage: Exclude<ScriptStage, 'episode'>) => void
+  onSupplementStage?: (stage: Exclude<ScriptStage, 'episode'>, artifactType?: StageArtifactType) => void
   registerNavigationGuard?: (guard: (() => Promise<boolean>) | null) => void
   onOpenDirector?: () => void
 }
@@ -768,9 +768,10 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
   const activeGroup = editorDocumentGroups.find(group => group.stage === scriptStageForArtifact(activeDocumentSection)) || editorDocumentGroups[0]!
   const activeGroupCatalog = catalogForStage(activeGroup.stage)
   const activeGroupDrafts = activeGroupCatalog.filter(item => pendingArtifacts.some(artifact => artifact.artifact_type === item.type && !artifact.episode_number)).length
-  const activeGroupFilled = activeGroupCatalog.filter(item => [...draft.artifacts, ...pendingArtifacts].some(artifact => artifact.artifact_type === item.type && !artifact.episode_number && artifact.content.trim())).length
+  const activeGroupProgress = workflowProgress(remoteScript || {})
+  const activeGroupFilled = activeGroupProgress.columns[activeGroup.stage].saved
   const activeGroupMissing = activeGroupCatalog.length - activeGroupFilled
-  const canSupplementGroup = !!onSupplementStage && workflowProgress(remoteScript || {}).completed[activeGroup.stage]
+  const canSupplementGroup = !!onSupplementStage && activeGroupProgress.started[activeGroup.stage]
   const legacyScript = [...draft.artifacts, ...pendingArtifacts].find(artifact => artifact.artifact_type === 'episode_script' && !artifact.episode_number && artifact.content.trim())
   const episodeDocuments = [...draft.artifacts, ...pendingArtifacts]
     .filter(item => item.artifact_type === 'episode_script' && (item.episode_number || 0) > 0)
@@ -903,8 +904,8 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
             <h1>{activeGroup.title}</h1>
             <p>{activeGroup.stage === 'outline' ? [draft.generation_options.genre, draft.generation_options.genre_fusion].filter(Boolean).join(' × ') || draft.brief.trim() || activeGroup.description : activeGroup.description}</p>
             <div className="script-stage-completeness">
-              <span>{activeGroupDrafts ? '已生成' : '已填写'} {activeGroupFilled}/{activeGroupCatalog.length} 项{activeGroupDrafts > 0 ? `，${activeGroupDrafts} 项待确认` : ''}{activeGroupMissing > 0 ? `，${activeGroupMissing} 项未生成` : '，栏目已齐全'}</span>
-              {activeGroupMissing > 0 && canSupplementGroup && <Button size="xs" variant="light" leftSection={<Sparkles size={13} />} disabled={disabled || hasUnsavedWork} title={hasUnsavedWork ? '请先保存当前手动修改' : `选择模型后，只补齐${activeGroup.title}未生成的栏目`} onClick={() => onSupplementStage?.(activeGroup.stage)}>补齐{activeGroup.title}缺项</Button>}
+              <span>已填写 {activeGroupFilled}/{activeGroupCatalog.length} 项{activeGroupDrafts > 0 ? `，${activeGroupDrafts} 项待确认` : ''}{activeGroupMissing === 0 ? '，栏目已齐全' : activeGroupDrafts === 0 ? `，${activeGroupMissing} 项未生成` : ''}</span>
+              {activeGroupMissing > 0 && canSupplementGroup && <Button size="xs" variant="light" leftSection={<Sparkles size={13} />} disabled={disabled || hasUnsavedWork || activeGroupDrafts > 0} title={hasUnsavedWork ? '请先保存当前手动修改' : `选择模型后，只补齐${activeGroup.title}未生成的栏目`} onClick={() => onSupplementStage?.(activeGroup.stage)}>补齐{activeGroup.title}缺项</Button>}
             </div>
           </header>
           {activeGroupCatalog.map((item, index) => {
@@ -919,8 +920,12 @@ function ScriptEditor({ detail, models, providers, busy = false, initialSection,
               {pending && renderGenerationDraft(pending)}
               {pending && artifact.content.trim() && <div className="script-confirmed-version-label">已确认版本</div>}
               {!artifact.content.trim() && !editingEmptySections.has(item.type) ? !pending && <div className="script-section-empty">
-                <div><strong>未生成</strong><span>此栏目暂无正文，可手动填写{canSupplementGroup ? '，或通过上方入口补齐缺项' : ''}。</span></div>
-                <Button size="xs" variant="subtle" disabled={disabled} aria-label={`手动填写${item.title}`} onClick={() => setEditingEmptySections(current => new Set(current).add(item.type))}>手动填写</Button>
+                <strong>未生成</strong>
+                <div className="script-section-empty-actions">
+                  {onSupplementStage && <Button size="xs" variant="subtle" disabled={disabled || hasUnsavedWork || activeGroupDrafts > 0}
+                    aria-label={`生成${item.title}`} onClick={() => onSupplementStage(activeGroup.stage, item.type)}>生成本栏</Button>}
+                  <Button size="xs" variant="subtle" disabled={disabled} aria-label={`手动填写${item.title}`} onClick={() => setEditingEmptySections(current => new Set(current).add(item.type))}>手动填写</Button>
+                </div>
               </div> : <RichArtifactEditor
                 key={artifact.id}
                 {...artifactSearchProps(artifact)}
